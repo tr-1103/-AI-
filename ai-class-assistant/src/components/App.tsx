@@ -27,18 +27,31 @@ const App: React.FC = () => {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [optimizationProgress, setOptimizationProgress] = useState(0);
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
+  // 進学時の再編成モード
+  const [isTransition, setIsTransition] = useState(false);
+  const [sourceSchoolType, setSourceSchoolType] = useState<SchoolType | null>(null);
 
   // ===== Step 0: 校種選択 =====
-  const handleSchoolSelect = useCallback((type: SchoolType, useSample: boolean) => {
-    const preset = SCHOOL_PRESETS[type];
-    setSchoolType(type);
-    setAcademicInputType(preset.defaultAcademicInput);
-    setPhysicalInputType(preset.defaultPhysicalInput);
+  const handleSchoolSelect = useCallback((
+    type: SchoolType,
+    useSample: boolean,
+    options?: { isTransition: boolean; sourceSchoolType?: SchoolType }
+  ) => {
+    // 進学モードではデータ読み込み形式をソース校種に合わせる
+    const srcType = options?.sourceSchoolType ?? type;
+    const srcPreset = SCHOOL_PRESETS[srcType];
+
+    setSchoolType(type);  // 最適化対象の校種（進学先）
+    setIsTransition(options?.isTransition ?? false);
+    setSourceSchoolType(options?.sourceSchoolType ?? null);
+    setAcademicInputType(srcPreset.defaultAcademicInput);
+    setPhysicalInputType(srcPreset.defaultPhysicalInput);
     setShowUpload(!useSample);
 
     if (useSample) {
-      const sampleStudents = generateSampleStudents(type);
-      const normalized = normalizeStudents(sampleStudents, preset.defaultAcademicInput, preset.defaultPhysicalInput);
+      // サンプルデータはソース校種で生成
+      const sampleStudents = generateSampleStudents(srcType);
+      const normalized = normalizeStudents(sampleStudents, srcPreset.defaultAcademicInput, srcPreset.defaultPhysicalInput);
       setStudents(normalized);
     } else {
       setStudents([]);
@@ -166,6 +179,8 @@ const App: React.FC = () => {
             schoolType={schoolType}
             defaultWeights={preset.defaultWeights}
             defaultNumClasses={preset.defaultNumClasses}
+            isTransition={isTransition}
+            sourceSchoolType={sourceSchoolType}
             onStart={handleOptimizationStart}
             onBack={() => setCurrentStep(1)}
           />

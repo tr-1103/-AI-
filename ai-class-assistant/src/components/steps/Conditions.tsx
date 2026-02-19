@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { Student, SchoolType, OptimizationWeights, PairConstraint, PairConstraintType, PairConstraintPriority } from '../../types/student';
-import { SCHOOL_PRESETS, DEFAULT_GA_CONFIG } from '../../data/presets';
+import { DEFAULT_GA_CONFIG } from '../../data/presets';
 
 interface Props {
   students: Student[];
   schoolType: SchoolType;
   defaultWeights: OptimizationWeights;
   defaultNumClasses: number;
+  isTransition?: boolean;
+  sourceSchoolType?: SchoolType | null;
   onStart: (numClasses: number, weights: OptimizationWeights, constraints: PairConstraint[]) => void;
   onBack: () => void;
 }
@@ -40,7 +42,13 @@ const WeightSlider: React.FC<WeightSliderProps> = ({ label, value, onChange, des
   </div>
 );
 
-const Conditions: React.FC<Props> = ({ students, schoolType, defaultWeights, defaultNumClasses, onStart, onBack }) => {
+const SCHOOL_LABELS: { [key in SchoolType]: string } = {
+  elementary: '小学校',
+  middle: '中学校',
+  high: '高校',
+};
+
+const Conditions: React.FC<Props> = ({ students, schoolType, defaultWeights, defaultNumClasses, isTransition, sourceSchoolType, onStart, onBack }) => {
   const [numClasses, setNumClasses] = useState(defaultNumClasses);
   const [weights, setWeights] = useState<OptimizationWeights>(defaultWeights);
   const [constraints, setConstraints] = useState<PairConstraint[]>([]);
@@ -90,6 +98,23 @@ const Conditions: React.FC<Props> = ({ students, schoolType, defaultWeights, def
           ← 戻る
         </button>
       </div>
+
+      {/* 進学時の再編成バナー */}
+      {isTransition && sourceSchoolType && (
+        <div className="mb-6 bg-orange-50 border border-orange-300 rounded-xl p-4 flex items-start gap-3">
+          <span className="text-orange-500 text-2xl mt-0.5">🎓</span>
+          <div className="flex-1">
+            <p className="font-bold text-orange-800 text-sm mb-1">
+              進学時の再編成モード：{SCHOOL_LABELS[sourceSchoolType]} → {SCHOOL_LABELS[schoolType]}
+            </p>
+            <p className="text-orange-700 text-xs leading-relaxed">
+              {SCHOOL_LABELS[sourceSchoolType]}のデータをもとに、{SCHOOL_LABELS[schoolType]}の編成に最適化します。
+              クラス数のデフォルトは{SCHOOL_LABELS[schoolType]}の標準（{defaultNumClasses}クラス）に設定されています。
+              実際の編成数（例：8クラスなど）に変更してから最適化してください。
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* 左カラム：基本設定 + ペア設定 */}

@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { AssignmentPlan, Student, PairConstraint } from '../../types/student';
+import React, { useState, useCallback, useEffect } from 'react';
+import { AssignmentPlan, ClassData, Student, PairConstraint } from '../../types/student';
 import { calcClassStats } from '../../utils/stats';
 import { exportToExcel } from '../../utils/excelReader';
 import StatsCard from '../ui/StatsCard';
@@ -12,15 +12,51 @@ interface Props {
   onBack: () => void;
 }
 
+/** ペア制約の違反を計算する */
+function calcViolations(classes: ClassData[], constraints: PairConstraint[]): PairConstraint[] {
+  return constraints.filter(c => {
+    const classOfA = classes.find(cls => cls.students.some(s => s.id === c.studentA))?.classNumber;
+    const classOfB = classes.find(cls => cls.students.some(s => s.id === c.studentB))?.classNumber;
+    if (classOfA === undefined || classOfB === undefined) return false;
+    if (c.type === 'ng') {
+      return classOfA === classOfB; // 同クラスは違反
+    } else {
+      return classOfA !== classOfB; // 別クラスは違反
+    }
+  });
+}
+
+/** ピアノ奏者が0人のクラス番号セットを返す */
+function calcPianoWarnings(classes: ClassData[]): Set<number> {
+  const warnings = new Set<number>();
+  classes.forEach(cls => {
+    const pianoCount = cls.students.filter(s => s.canPlayPiano).length;
+    if (pianoCount === 0 && cls.students.length > 0) {
+      warnings.add(cls.classNumber);
+    }
+  });
+  return warnings;
+}
+
 const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) => {
   const [selectedPlanIdx, setSelectedPlanIdx] = useState(0);
   const [viewMode, setViewMode] = useState<'stats' | 'drag'>('stats');
   const [draggingStudentId, setDraggingStudentId] = useState<string | null>(null);
   const [draggingFromClass, setDraggingFromClass] = useState<number | null>(null);
   const [localPlans, setLocalPlans] = useState<AssignmentPlan[]>(plans);
+  // ドラッグ後のリアルタイムエラー状態
+  const [pianoWarnings, setPianoWarnings] = useState<Set<number>>(new Set());
+  const [dragViolations, setDragViolations] = useState<PairConstraint[]>([]);
 
   const currentPlan = localPlans[selectedPlanIdx];
   const violated = currentPlan?.violatedConstraints ?? [];
+
+  // 編成案切り替え時にエラーを再計算
+  useEffect(() => {
+    if (!currentPlan) return;
+    setPianoWarnings(calcPianoWarnings(currentPlan.classes));
+    setDragViolations(calcViolations(currentPlan.classes, constraints));
+  }, [selectedPlanIdx, currentPlan, constraints]);
 
   const handleDragStart = useCallback((e: React.DragEvent, studentId: string, fromClass: number) => {
     setDraggingStudentId(studentId);
@@ -60,9 +96,16 @@ const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) =
       plan.classes = newClasses;
       plan.stats = newClasses.map(cls => calcClassStats(cls));
       newPlans[selectedPlanIdx] = plan;
+
+      // ドラッグ後のエラーをリアルタイムで更新
+      const newPianoWarnings = calcPianoWarnings(newClasses);
+      const newViolations = calcViolations(newClasses, constraints);
+      setPianoWarnings(newPianoWarnings);
+      setDragViolations(newViolations);
+
       return newPlans;
     });
-  }, [draggingStudentId, draggingFromClass, selectedPlanIdx]);
+  }, [draggingStudentId, draggingFromClass, selectedPlanIdx, constraints]);
 
   const handleExport = () => {
     const planName = `クラス編成案${selectedPlanIdx + 1}`;
@@ -77,6 +120,9 @@ const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) =
       </div>
     );
   }
+
+  // 表示用：ドラッグ編集中は dragViolations を使用、統計ビューは初期の violated を使用
+  const displayViolated = viewMode === 'drag' ? dragViolations : violated;
 
   return (
     <div className="max-w-7xl mx-auto py-6 px-4">
@@ -125,19 +171,35 @@ const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) =
       </div>
 
       {/* 違反警告 */}
-      {violated.length > 0 && (
+      {displayViolated.length > 0 && (
         <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-4">
-          <p className="font-bold text-red-700 text-sm mb-2">⚠ ペア制約の違反 {violated.length}件</p>
+          <p className="font-bold text-red-700 text-sm mb-2">⚠ ペア制約の違反 {displayViolated.length}件</p>
           <div className="flex flex-wrap gap-2">
-            {violated.map(c => {
+            {displayViolated.map(c => {
               const nameA = allStudents.find(s => s.id === c.studentA)?.name ?? c.studentA;
               const nameB = allStudents.find(s => s.id === c.studentB)?.name ?? c.studentB;
               return (
                 <span key={c.id} className="px-2 py-1 bg-red-100 text-red-600 rounded text-xs">
-                  {c.type === 'ng' ? 'NG' : 'OK'}: {nameA} ↔ {nameB}
+                  {c.type === 'ng' ? 'NG（同クラス禁止）' : 'OK（同クラス指定）'}: {nameA} ↔ {nameB}
                 </span>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* ピアノ警告（ドラッグ編集時） */}
+      {viewMode === 'drag' && pianoWarnings.size > 0 && (
+        <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-4">
+          <p className="font-bold text-red-700 text-sm mb-2">
+            🎹 <span className="text-red-600">ピアノ</span> 奏者がいないクラスがあります
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {Array.from(pianoWarnings).sort((a, b) => a - b).map(classNum => (
+              <span key={classNum} className="px-2 py-1 bg-red-100 text-red-600 rounded text-xs font-medium">
+                {classNum}組：ピアノ 0名
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -174,7 +236,7 @@ const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) =
         <div>
           <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-sm text-blue-700">
             生徒カードをドラッグして別のクラス列にドロップすると移動できます。
-            統計はリアルタイムで更新されます。
+            ピアノ奏者が0人になると<span className="text-red-600 font-bold">赤いエラー</span>が表示されます。
           </div>
           <div
             className="grid gap-3"
@@ -188,6 +250,9 @@ const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) =
                 onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
                 onDrop={handleDrop}
+                hasPianoWarning={pianoWarnings.has(cls.classNumber)}
+                violations={dragViolations}
+                allStudents={allStudents}
               />
             ))}
           </div>
@@ -195,12 +260,16 @@ const Results: React.FC<Props> = ({ plans, constraints, allStudents, onBack }) =
           <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
             {currentPlan.classes.map((cls, idx) => {
               const stats = currentPlan.stats[idx];
+              const hasWarning = pianoWarnings.has(cls.classNumber);
               return (
-                <div key={cls.classNumber} className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                <div key={cls.classNumber} className={`border rounded-lg px-3 py-2 text-sm ${hasWarning ? 'bg-red-50 border-red-200' : 'bg-white border-gray-200'}`}>
                   <p className="font-bold text-gray-700 mb-1">{cls.classNumber}組</p>
                   <p className="text-gray-500 text-xs">
                     {stats?.total ?? 0}名 | 学力{stats?.avgAcademic ?? 0} | 配慮{stats?.totalCarePoints ?? 0}pt
                   </p>
+                  {hasWarning && (
+                    <p className="text-red-600 text-xs font-bold mt-0.5">🎹 ピアノ 0名</p>
+                  )}
                 </div>
               );
             })}

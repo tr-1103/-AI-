@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ClassData } from '../../types/student';
+import { ClassData, PairConstraint } from '../../types/student';
 import { CLASS_COLORS } from '../../data/presets';
 import StudentCard from './StudentCard';
 
@@ -9,13 +9,36 @@ interface Props {
   onDragStart: (e: React.DragEvent, studentId: string, fromClass: number) => void;
   onDragEnd: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent, toClass: number) => void;
+  hasPianoWarning?: boolean;
+  violations?: PairConstraint[];
+  allStudents?: { id: string; name: string }[];
 }
 
-const ClassColumn: React.FC<Props> = ({ classData, draggingStudentId, onDragStart, onDragEnd, onDrop }) => {
+const ClassColumn: React.FC<Props> = ({
+  classData,
+  draggingStudentId,
+  onDragStart,
+  onDragEnd,
+  onDrop,
+  hasPianoWarning = false,
+  violations = [],
+  allStudents = [],
+}) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const classColor = CLASS_COLORS[(classData.classNumber - 1) % CLASS_COLORS.length];
   const maleCount = classData.students.filter(s => s.gender === 'male').length;
   const femaleCount = classData.students.length - maleCount;
+
+  const pianoCount = classData.students.filter(s => s.canPlayPiano).length;
+
+  // 自クラスに関係する違反
+  const classStudentIds = new Set(classData.students.map(s => s.id));
+  const classViolations = violations.filter(
+    c => classStudentIds.has(c.studentA) || classStudentIds.has(c.studentB)
+  );
+
+  const getName = (id: string) =>
+    allStudents.find(s => s.id === id)?.name ?? id;
 
   return (
     <div
@@ -25,6 +48,8 @@ const ClassColumn: React.FC<Props> = ({ classData, draggingStudentId, onDragStar
       className={`flex flex-col min-h-64 rounded-xl border-2 transition-all
         ${isDragOver
           ? 'border-blue-400 bg-blue-50 shadow-lg'
+          : hasPianoWarning || classViolations.length > 0
+          ? 'border-red-300 bg-red-50'
           : 'border-gray-200 bg-gray-50'
         }`}
     >
@@ -42,6 +67,38 @@ const ClassColumn: React.FC<Props> = ({ classData, draggingStudentId, onDragStar
           <span className="font-bold">{classData.students.length}名</span>
         </div>
       </div>
+
+      {/* エラーバナー */}
+      {(hasPianoWarning || classViolations.length > 0) && (
+        <div className="px-2 pt-2 flex flex-col gap-1">
+          {hasPianoWarning && (
+            <div className="flex items-center gap-1.5 bg-red-100 border border-red-300 rounded-lg px-2.5 py-1.5 text-xs">
+              <span className="font-bold text-red-600">🎹 ピアノ</span>
+              <span className="text-red-600">{pianoCount}名 — ピアノ奏者がいません</span>
+            </div>
+          )}
+          {classViolations.map(c => {
+            const nameA = getName(c.studentA);
+            const nameB = getName(c.studentB);
+            const inSameClass =
+              classStudentIds.has(c.studentA) && classStudentIds.has(c.studentB);
+            return (
+              <div
+                key={c.id}
+                className="flex items-center gap-1.5 bg-red-100 border border-red-300 rounded-lg px-2.5 py-1.5 text-xs"
+              >
+                <span className={`font-bold px-1 py-0.5 rounded text-xs ${c.type === 'ng' ? 'bg-red-200 text-red-700' : 'bg-green-200 text-green-700'}`}>
+                  {c.type === 'ng' ? 'NG' : 'OK'}
+                </span>
+                <span className="text-red-700">
+                  {nameA} ↔ {nameB}
+                  {c.type === 'ng' && inSameClass ? '（同クラス禁止）' : '（別クラス指定）'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* ドロップヒント */}
       {isDragOver && (
