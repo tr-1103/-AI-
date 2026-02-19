@@ -244,6 +244,12 @@ const Conditions: React.FC<Props> = ({ students, schoolType, defaultWeights, def
           </p>
           <div className="flex flex-col gap-5">
             <WeightSlider
+              label="クラス人数の均等化"
+              value={weights.classSizeBalance}
+              onChange={v => setWeight('classSizeBalance', v)}
+              description="各クラスの総人数をできるだけ揃える（進学時に特に有効）"
+            />
+            <WeightSlider
               label="男女比の均等化"
               value={weights.genderBalance}
               onChange={v => setWeight('genderBalance', v)}

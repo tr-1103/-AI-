@@ -138,6 +138,7 @@ export interface OptimizationWeights {
   absenceDistribution: number; // 不登校分散
   formerClassMix: number;      // 旧クラス分散
   specialSupportBalance: number; // 特別支援均等
+  classSizeBalance: number;    // クラス人数均等
 }
 
 /** 最適化設定 */

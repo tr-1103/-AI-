@@ -17,6 +17,7 @@ const defaultWeightsBase: OptimizationWeights = {
   absenceDistribution: 6,
   formerClassMix: 5,
   specialSupportBalance: 7,
+  classSizeBalance: 8,   // クラス人数均等（デフォルト重視）
 };
 
 export const SCHOOL_PRESETS: { [key: string]: SchoolPreset } = {

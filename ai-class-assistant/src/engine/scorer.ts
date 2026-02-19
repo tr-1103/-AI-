@@ -131,6 +131,12 @@ export function scoreAssignment(
     penalty += Math.abs(m.totalCarePoints / Math.max(classes[0].students.length, 1) - globalAvgCare) * weights.careBalance * 10;
   }
 
+  // --- クラス人数均等 ---
+  const avgClassSize = totalStudents / numClasses;
+  const classSizes = classes.map(cls => cls.students.length);
+  const sizeVariance = classSizes.reduce((a, n) => a + Math.pow(n - avgClassSize, 2), 0) / numClasses;
+  penalty += sizeVariance * weights.classSizeBalance * 0.5;
+
   // 旧クラス分散（全クラス横断で計算）
   const formerClassCountsPerClass: Map<number, number>[] = classes.map(cls => {
     const m = new Map<number, number>();
