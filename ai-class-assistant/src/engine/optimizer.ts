@@ -71,6 +71,101 @@ function mutate(chromosome: Chromosome, numClasses: number): Chromosome {
 }
 
 /**
+ * Max設定時：クラス総人数を均等化（誤差1人以内）
+ * 過剰クラスから不足クラスへ生徒を移動する
+ */
+function repairClassSizes(chromosome: Chromosome, students: Student[], numClasses: number): Chromosome {
+  const repaired = [...chromosome];
+  const idealMin = Math.floor(students.length / numClasses);
+  const idealMax = Math.ceil(students.length / numClasses);
+
+  // 各クラスの生徒インデックス一覧を構築
+  const classIdx: number[][] = Array.from({ length: numClasses }, () => []);
+  for (let i = 0; i < repaired.length; i++) classIdx[repaired[i]].push(i);
+
+  // 過剰クラス → 不足クラスへ移動（最大200回試行）
+  for (let iter = 0; iter < 200; iter++) {
+    let moved = false;
+    for (let from = 0; from < numClasses; from++) {
+      while (classIdx[from].length > idealMax) {
+        const to = classIdx.findIndex((c, i) => i !== from && c.length < idealMin);
+        if (to === -1) break;
+        const si = classIdx[from].pop()!;
+        classIdx[to].push(si);
+        repaired[si] = to;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return repaired;
+}
+
+/**
+ * Max設定時：男女数を均等化（誤差1人以内）
+ * クラス総人数を変えずに男女をスワップする
+ */
+function repairGenderBalance(chromosome: Chromosome, students: Student[], numClasses: number): Chromosome {
+  const repaired = [...chromosome];
+  const maleTotal = students.filter(s => s.gender === 'male').length;
+  const femaleTotal = students.length - maleTotal;
+  const idealMaleMin = Math.floor(maleTotal / numClasses);
+  const idealMaleMax = Math.ceil(maleTotal / numClasses);
+  const idealFemaleMin = Math.floor(femaleTotal / numClasses);
+  const idealFemaleMax = Math.ceil(femaleTotal / numClasses);
+
+  // 各クラスの男女インデックス一覧を構築
+  const classMales: number[][] = Array.from({ length: numClasses }, () => []);
+  const classFemales: number[][] = Array.from({ length: numClasses }, () => []);
+  for (let i = 0; i < repaired.length; i++) {
+    if (students[i].gender === 'male') classMales[repaired[i]].push(i);
+    else classFemales[repaired[i]].push(i);
+  }
+
+  // 男子過剰クラス ↔ 男子不足クラスで男女をスワップ（総人数維持）
+  for (let iter = 0; iter < 300; iter++) {
+    let swapped = false;
+    for (let from = 0; from < numClasses; from++) {
+      if (classMales[from].length > idealMaleMax && classFemales[from].length < idealFemaleMax) {
+        // fromは男子多・女子少 → 男子不足のクラスを探す
+        const to = classMales.findIndex((m, i) => i !== from && m.length < idealMaleMin && classFemales[i].length > idealFemaleMin);
+        if (to === -1) continue;
+        // fromの男子1人 → to へ、toの女子1人 → from へ（スワップ）
+        const maleIdx = classMales[from].pop()!;
+        const femaleIdx = classFemales[to].pop()!;
+        repaired[maleIdx] = to;
+        repaired[femaleIdx] = from;
+        classMales[to].push(maleIdx);
+        classFemales[from].push(femaleIdx);
+        swapped = true;
+      }
+    }
+    if (!swapped) break;
+  }
+
+  // 女子過剰クラス ↔ 女子不足クラスで男女をスワップ（念のため逆方向も処理）
+  for (let iter = 0; iter < 300; iter++) {
+    let swapped = false;
+    for (let from = 0; from < numClasses; from++) {
+      if (classFemales[from].length > idealFemaleMax && classMales[from].length < idealMaleMax) {
+        const to = classFemales.findIndex((f, i) => i !== from && f.length < idealFemaleMin && classMales[i].length > idealMaleMin);
+        if (to === -1) continue;
+        const femaleIdx = classFemales[from].pop()!;
+        const maleIdx = classMales[to].pop()!;
+        repaired[femaleIdx] = to;
+        repaired[maleIdx] = from;
+        classFemales[to].push(femaleIdx);
+        classMales[from].push(maleIdx);
+        swapped = true;
+      }
+    }
+    if (!swapped) break;
+  }
+
+  return repaired;
+}
+
+/**
  * 遺伝的アルゴリズムでクラス編成を最適化する
  * @param students 正規化済み生徒リスト
  * @param config 最適化設定
@@ -203,7 +298,15 @@ export async function optimizeClassAssignment(
   // AssignmentPlanに変換
   const now = new Date();
   return selectedPlans.slice(0, numPlans).map((p, planIdx) => {
-    const classes = chromosomeToClasses(p.chromosome, students, numClasses);
+    // Max設定時：GA後に人数・男女数をハード制約で強制均等化
+    let chromosome = p.chromosome;
+    if (weights.classSizeBalance >= 15) {
+      chromosome = repairClassSizes(chromosome, students, numClasses);
+    }
+    if (weights.genderBalance >= 15) {
+      chromosome = repairGenderBalance(chromosome, students, numClasses);
+    }
+    const classes = chromosomeToClasses(chromosome, students, numClasses);
     const stats = classes.map(cls => calcClassStats(cls));
     const violated = getViolatedConstraints(classes, constraints);
     return {

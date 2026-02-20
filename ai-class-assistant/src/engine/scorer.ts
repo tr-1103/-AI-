@@ -97,7 +97,9 @@ export function scoreAssignment(
   const totalStudents = allStudents.length;
 
   // 全体統計
-  const globalMaleRatio = allStudents.filter(s => s.gender === 'male').length / totalStudents;
+  const globalMaleCount = allStudents.filter(s => s.gender === 'male').length;
+  const globalFemaleCount = totalStudents - globalMaleCount;
+  const globalMaleRatio = globalMaleCount / totalStudents;
   const globalAvgAcademic = allStudents.reduce((a, s) => a + (s.normalizedAcademic ?? 50), 0) / totalStudents;
   const globalAvgPhysical = allStudents.reduce((a, s) => a + (s.normalizedPhysical ?? 50), 0) / totalStudents;
   const globalAvgCare = allStudents.reduce((a, s) => a + (s.totalCarePoints ?? 0), 0) / totalStudents;
@@ -105,12 +107,30 @@ export function scoreAssignment(
   const globalLeader = allStudents.filter(s => s.isLeader).length / numClasses;
   const globalAbsence = allStudents.filter(s => s.hasTendencyAbsence).length / numClasses;
 
+  // Max設定時の男女数ハード制約用の理想値
+  const idealMaleMin = Math.floor(globalMaleCount / numClasses);
+  const idealMaleMax = Math.ceil(globalMaleCount / numClasses);
+  const idealFemaleMin = Math.floor(globalFemaleCount / numClasses);
+  const idealFemaleMax = Math.ceil(globalFemaleCount / numClasses);
+
   // クラスメトリクス計算
   const metrics = classes.map(cls => calcClassMetrics(cls));
 
-  for (const m of metrics) {
+  for (let ci = 0; ci < metrics.length; ci++) {
+    const m = metrics[ci];
     // --- 男女比均等 ---
-    penalty += Math.abs(m.maleRatio - globalMaleRatio) * weights.genderBalance * 20;
+    if (weights.genderBalance >= 15) {
+      // Max設定：男女数が理想値から1人超えるごとに大ペナルティ（ハード制約）
+      const classMaleCount = classes[ci].students.filter(s => s.gender === 'male').length;
+      const classFemaleCount = classes[ci].students.length - classMaleCount;
+      const maleOver = Math.max(0, classMaleCount - idealMaleMax);
+      const maleUnder = Math.max(0, idealMaleMin - classMaleCount);
+      const femaleOver = Math.max(0, classFemaleCount - idealFemaleMax);
+      const femaleUnder = Math.max(0, idealFemaleMin - classFemaleCount);
+      penalty += (maleOver + maleUnder + femaleOver + femaleUnder) * 2000;
+    } else {
+      penalty += Math.abs(m.maleRatio - globalMaleRatio) * weights.genderBalance * 20;
+    }
 
     // --- 学力均等 ---
     penalty += Math.abs(m.avgAcademic - globalAvgAcademic) * weights.academicBalance * 0.5;
@@ -132,10 +152,21 @@ export function scoreAssignment(
   }
 
   // --- クラス人数均等 ---
-  const avgClassSize = totalStudents / numClasses;
   const classSizes = classes.map(cls => cls.students.length);
-  const sizeVariance = classSizes.reduce((a, n) => a + Math.pow(n - avgClassSize, 2), 0) / numClasses;
-  penalty += sizeVariance * weights.classSizeBalance * 0.5;
+  const idealSizeMin = Math.floor(totalStudents / numClasses);
+  const idealSizeMax = Math.ceil(totalStudents / numClasses);
+  if (weights.classSizeBalance >= 15) {
+    // Max設定：誤差1人以内のハード制約（1人超えるごとに大ペナルティ）
+    for (const size of classSizes) {
+      const over = Math.max(0, size - idealSizeMax);
+      const under = Math.max(0, idealSizeMin - size);
+      penalty += (over + under) * 2000;
+    }
+  } else {
+    const avgClassSize = totalStudents / numClasses;
+    const sizeVariance = classSizes.reduce((a, n) => a + Math.pow(n - avgClassSize, 2), 0) / numClasses;
+    penalty += sizeVariance * weights.classSizeBalance * 0.5;
+  }
 
   // 旧クラス分散（全クラス横断で計算）
   const formerClassCountsPerClass: Map<number, number>[] = classes.map(cls => {
