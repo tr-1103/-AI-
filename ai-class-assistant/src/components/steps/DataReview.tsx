@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Student, SchoolType, AcademicInputType, PhysicalInputType } from '../../types/student';
 import { SCHOOL_PRESETS } from '../../data/presets';
 import { readExcelFile } from '../../utils/excelReader';
@@ -45,10 +45,9 @@ const DataReview: React.FC<Props> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unknownColumns, setUnknownColumns] = useState<string[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const processFile = useCallback(async (file: File) => {
     if (!file) return;
     setIsLoading(true);
     setError(null);
@@ -65,6 +64,20 @@ const DataReview: React.FC<Props> = ({
     } finally {
       setIsLoading(false);
     }
+  }, [academicType, physicalType, schoolType]);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processFile(file);
+    // 同じファイルを再選択できるようリセット
+    e.target.value = '';
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) processFile(file);
   };
 
   const handleTypeChange = (newAcademicType: AcademicInputType, newPhysicalType: PhysicalInputType) => {
@@ -103,22 +116,30 @@ const DataReview: React.FC<Props> = ({
 
       {/* ファイルアップロードエリア */}
       {showUpload && (
-        <div className="mb-6 bg-white border-2 border-dashed border-blue-300 rounded-xl p-8 text-center">
-          <p className="text-gray-600 mb-4">Excelファイル（.xlsx / .xls）をアップロードしてください</p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls"
-            onChange={handleFileUpload}
-            className="hidden"
-          />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isLoading}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        <div className="mb-6">
+          <label
+            htmlFor="excel-file-input"
+            onDrop={handleDrop}
+            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+            onDragLeave={() => setIsDragOver(false)}
+            className={`block bg-white border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors
+              ${isDragOver ? 'border-blue-500 bg-blue-50' : 'border-blue-300 hover:border-blue-400 hover:bg-blue-50'}
+              ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
-            {isLoading ? '読み込み中...' : 'ファイルを選択'}
-          </button>
+            <p className="text-gray-600 mb-2">
+              Excelファイル（.xlsx / .xls）を選択またはここにドラッグ&amp;ドロップ
+            </p>
+            <p className="text-blue-600 font-semibold text-sm mb-4">クリックしてファイルを選択</p>
+            <input
+              id="excel-file-input"
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleFileUpload}
+              disabled={isLoading}
+              style={{ display: 'block', margin: '0 auto', fontSize: '14px' }}
+            />
+            {isLoading && <p className="text-blue-600 mt-3 text-sm font-medium">読み込み中...</p>}
+          </label>
           {error && <p className="text-red-500 mt-3 text-sm">{error}</p>}
           {unknownColumns.length > 0 && (
             <div className="mt-3 bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-left">
