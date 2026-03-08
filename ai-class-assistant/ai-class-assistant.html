@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIクラス編成アシスタント</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif; -webkit-font-smoothing: antialiased; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #2563eb; cursor: pointer; }
+        @keyframes slideInRight { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes shake { 0%,100% { transform: translateX(0); } 10%,30%,50%,70%,90% { transform: translateX(-4px); } 20%,40%,60%,80% { transform: translateX(4px); } }
+        .alert-slide-in { animation: slideInRight 0.3s ease-out; }
+        .alert-shake { animation: shake 0.5s ease-in-out; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useRef, useEffect } = React;
+
+// ============================================================
+// 定数・プリセット
+// ============================================================
+const SCHOOL_PRESETS = {
+    elementary: { schoolType:'elementary', label:'小学校', description:'3段階または5段階の学力評価、運動能力フラグ、通学班対応', defaultAcademicInput:'scale_3', defaultPhysicalInput:'flag', defaultNumClasses:4, defaultWeights:{ genderBalance:10, academicBalance:8, physicalBalance:5, careBalance:7, pianoDistribution:8, leaderDistribution:4, absenceDistribution:6, formerClassMix:6, specialSupportBalance:7, classSizeBalance:8 }, sampleSubjects:['国語','算数','理科','社会'] },
+    middle: { schoolType:'middle', label:'中学校', description:'5段階または100点満点の学力評価、5教科対応', defaultAcademicInput:'scale_5', defaultPhysicalInput:'scale_5', defaultNumClasses:5, defaultWeights:{ genderBalance:10, academicBalance:10, physicalBalance:5, careBalance:8, pianoDistribution:6, leaderDistribution:4, absenceDistribution:6, formerClassMix:5, specialSupportBalance:8, classSizeBalance:8 }, sampleSubjects:['国語','数学','英語','理科','社会'] },
+    high: { schoolType:'high', label:'高校', description:'偏差値または5教科合計、コース・選択科目対応', defaultAcademicInput:'deviation', defaultPhysicalInput:'grade_AE', defaultNumClasses:6, defaultWeights:{ genderBalance:8, academicBalance:9, physicalBalance:5, careBalance:7, pianoDistribution:3, leaderDistribution:4, absenceDistribution:6, formerClassMix:4, specialSupportBalance:7, classSizeBalance:8 }, sampleSubjects:['国語','数学','英語','理科','社会'] },
+};
+const DEFAULT_GA_CONFIG = { populationSize:60, generations:350, eliteCount:14, mutationRate:0.05, numPlans:5 };
+const CLASS_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2','#65a30d'];
+const CARE_COLORS = { learning:'#2563eb', behavior:'#d97706', relationship:'#dc2626', family:'#7c3aed', health:'#059669' };
+const CARE_CATEGORY_LABELS = { learning:'学習支援', behavior:'生活指導', relationship:'人間関係', family:'家庭環境', health:'健康・心理' };
+const SCHOOL_LABELS = { elementary:'小学校', middle:'中学校', high:'高校' };
+const SCHOOL_ICONS = { elementary:'🏫', middle:'🏫', high:'🎓' };
+const SCHOOL_COUNTS = { elementary:'4クラス / 108名', middle:'5クラス / 150名', high:'6クラス / 180名' };
+const ACADEMIC_TYPE_LABELS = { scale_3:'3段階（◎○△）', scale_5:'5段階（1〜5）', points_100:'100点満点', points_500:'5教科合計（500点）', deviation:'偏差値', custom:'カスタム' };
+const PHYSICAL_TYPE_LABELS = { numeric:'数値（体力テスト）', grade_AE:'段階評価（A〜E）', scale_5:'5段階（1〜5）', flag:'フラグ（○印）' };
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+class SeededRandom { constructor(s){this.seed=s;} next(){this.seed=(this.seed*1664525+1013904223)&0xffffffff;return(this.seed>>>0)/0xffffffff;} nextInt(a,b){return Math.floor(this.next()*(b-a+1))+a;} pick(a){return a[Math.floor(this.next()*a.length)];} bool(p=0.5){return this.next()<p;} }
+
+function generateSampleStudents(schoolType, count=108, seed=42) {
+    const rng = new SeededRandom(seed);
+    const ln=['田中','鈴木','佐藤','高橋','渡辺','伊藤','山本','中村','小林','加藤','吉田','山田','佐々木','山口','松本','井上','木村','林','斎藤','清水'];
+    const fm=['蓮','陽翔','湊','蒼','陸','樹','悠斗','大翔','翔','一輝','颯太','優斗','健太','拓海','海斗'];
+    const ff=['葵','陽菜','凛','結衣','桜','美咲','愛','心春','七海','詩','杏','柚希','さくら','彩花','優奈'];
+    const students = [];
+    for (let i=0;i<count;i++) {
+        const gender = rng.bool(0.5)?'male':'female';
+        const name = rng.pick(ln)+(gender==='male'?rng.pick(fm):rng.pick(ff));
+        let currentClass, academicRaw, physicalRaw, careCategories;
+        if (schoolType==='elementary') { currentClass=rng.nextInt(1,4); academicRaw=rng.pick(['◎','○','△']); physicalRaw=rng.bool(0.3)?'○':undefined; }
+        else if (schoolType==='middle') { currentClass=rng.nextInt(1,5); academicRaw=rng.nextInt(1,5); physicalRaw=rng.nextInt(1,5); }
+        else { currentClass=rng.nextInt(1,6); academicRaw=Math.min(70,Math.max(35,Math.round(50+(rng.next()-0.5)*30))); physicalRaw=rng.pick(['A','B','C','D','E']); }
+        if (rng.bool(0.15)) { careCategories={}; const cat=rng.pick(['learning','behavior','relationship','family','health']); careCategories[cat]=rng.bool(0.5)?1:rng.bool(0.7)?2:3; }
+        students.push({ id:`S${String(i+1).padStart(4,'0')}`, name, gender, currentClass, academicRaw, physicalRaw, canPlayPiano:rng.bool(0.12), isLeader:rng.bool(0.10), hasSpecialSupport:rng.bool(0.04), hasTendencyAbsence:rng.bool(0.05), careCategories });
+    }
+    return students;
+}
+
+function normalizeScale3(v){const s=String(v).trim();if(s==='◎'||s==='3')return 100;if(s==='○'||s==='2')return 50;if(s==='△'||s==='1')return 0;return 50;}
+function normalizeScale5(v){const n=parseFloat(String(v));if(isNaN(n))return 50;return Math.max(0,Math.min(100,((n-1)/4)*100));}
+function normalizePoints100(v){const n=parseFloat(String(v));if(isNaN(n))return 50;return Math.max(0,Math.min(100,n));}
+function normalizePoints500(v){const n=parseFloat(String(v));if(isNaN(n))return 50;return Math.max(0,Math.min(100,(n/500)*100));}
+function normalizeDeviation(v){const n=parseFloat(String(v));if(isNaN(n))return 50;return Math.max(0,Math.min(100,((n-25)/50)*100));}
+function normalizeGradeAE(v){const s=String(v).trim().toUpperCase();return{A:100,B:75,C:50,D:25,E:0}[s]??50;}
+function normalizeFlagVal(v){const s=String(v??'').trim();return(s==='○'||s==='◯'||s==='〇'||s==='◎'||s==='●'||s==='✓'||s==='✔'||v===1||v===true)?100:0;}
+function normalizeAcademic(v,t){if(v===undefined||v===null||v==='')return 50;switch(t){case'scale_3':return normalizeScale3(v);case'scale_5':return normalizeScale5(v);case'points_100':return normalizePoints100(v);case'points_500':return normalizePoints500(v);case'deviation':return normalizeDeviation(v);default:return normalizeScale5(v);}}
+function normalizePhysical(v,t){if(v===undefined||v===null||v==='')return 50;switch(t){case'grade_AE':return normalizeGradeAE(v);case'scale_5':return normalizeScale5(v);case'flag':return normalizeFlagVal(v);case'numeric':return normalizePoints100(v);default:return normalizeScale5(v);}}
+function calcTotalCarePoints(s){if(s.careCategories)return Object.values(s.careCategories).reduce((a,b)=>a+b,0);if(s.careFlag)return 2;return 0;}
+function normalizeStudents(students,at,pt){return students.map(s=>({...s,normalizedAcademic:normalizeAcademic(s.academicRaw,at),normalizedPhysical:normalizePhysical(s.physicalRaw,pt),totalCarePoints:calcTotalCarePoints(s)}));}
+
+function calcClassStats(cls) {
+    const st=cls.students,total=st.length;
+    if(!total)return{classNumber:cls.classNumber,total:0,maleCount:0,femaleCount:0,maleRatio:0,avgAcademic:0,avgPhysical:0,pianoCount:0,leaderCount:0,specialSupportCount:0,absenceTendencyCount:0,totalCarePoints:0,categoryBreakdown:{},formerClasses:{}};
+    const mc=st.filter(s=>s.gender==='male').length,fc=total-mc;
+    const aa=st.reduce((a,s)=>a+(s.normalizedAcademic??50),0)/total;
+    const ap=st.reduce((a,s)=>a+(s.normalizedPhysical??50),0)/total;
+    const cats=['learning','behavior','relationship','family','health'];
+    const cb={};cats.forEach(cat=>{let c=0,sv=0;st.forEach(s=>{const l=s.careCategories?.[cat];if(l){c++;if(l>=3)sv++;}});if(c)cb[cat]={count:c,severe:sv};});
+    const fcs={};st.forEach(s=>{if(!fcs[s.currentClass])fcs[s.currentClass]={total:0,male:0,female:0};fcs[s.currentClass].total++;if(s.gender==='male')fcs[s.currentClass].male++;else fcs[s.currentClass].female++;});
+    return{classNumber:cls.classNumber,total,maleCount:mc,femaleCount:fc,maleRatio:mc/total,avgAcademic:Math.round(aa*10)/10,avgPhysical:Math.round(ap*10)/10,pianoCount:st.filter(s=>s.canPlayPiano).length,leaderCount:st.filter(s=>s.isLeader).length,specialSupportCount:st.filter(s=>s.hasSpecialSupport).length,absenceTendencyCount:st.filter(s=>s.hasTendencyAbsence).length,totalCarePoints:st.reduce((a,s)=>a+(s.totalCarePoints??0),0),categoryBreakdown:cb,formerClasses:fcs};
+}
+
+// スコアリング
+function calcClassMetrics(cls){const st=cls.students,t=st.length;if(!t)return{maleRatio:.5,avgAcademic:50,avgPhysical:50,pianoCount:0,leaderCount:0,specialSupportCount:0,absenceCount:0,totalCarePoints:0,careByCategory:{},formerClasses:new Set()};const mc=st.filter(s=>s.gender==='male').length;const cbc={};['learning','behavior','relationship','family','health'].forEach(cat=>{let c=0,sc=0;st.forEach(s=>{const l=s.careCategories?.[cat];if(l){c++;if(l>=3)sc++;}});if(c)cbc[cat]={count:c,severeCount:sc};});return{maleRatio:mc/t,avgAcademic:st.reduce((a,s)=>a+(s.normalizedAcademic??50),0)/t,avgPhysical:st.reduce((a,s)=>a+(s.normalizedPhysical??50),0)/t,pianoCount:st.filter(s=>s.canPlayPiano).length,leaderCount:st.filter(s=>s.isLeader).length,specialSupportCount:st.filter(s=>s.hasSpecialSupport).length,absenceCount:st.filter(s=>s.hasTendencyAbsence).length,totalCarePoints:st.reduce((a,s)=>a+(s.totalCarePoints??0),0),careByCategory:cbc,formerClasses:new Set(st.map(s=>s.currentClass))};}
+
+function scoreAssignment(classes,allStudents,weights,constraints){
+    const B=10000;let p=0;const nc=classes.length,ts=allStudents.length;
+    const gmc=allStudents.filter(s=>s.gender==='male').length,gfc=ts-gmc,gmr=gmc/ts;
+    const gaa=allStudents.reduce((a,s)=>a+(s.normalizedAcademic??50),0)/ts;
+    const gap=allStudents.reduce((a,s)=>a+(s.normalizedPhysical??50),0)/ts;
+    const gac=allStudents.reduce((a,s)=>a+(s.totalCarePoints??0),0)/ts;
+    const gsp=allStudents.filter(s=>s.hasSpecialSupport).length/nc;
+    const gl=allStudents.filter(s=>s.isLeader).length/nc;
+    const ga=allStudents.filter(s=>s.hasTendencyAbsence).length/nc;
+    const imn=Math.floor(gmc/nc),imx=Math.ceil(gmc/nc),ifn=Math.floor(gfc/nc),ifx=Math.ceil(gfc/nc);
+    const metrics=classes.map(c=>calcClassMetrics(c));
+    for(let ci=0;ci<metrics.length;ci++){const m=metrics[ci];
+        if(weights.genderBalance>=15){const cm=classes[ci].students.filter(s=>s.gender==='male').length,cf=classes[ci].students.length-cm;p+=(Math.max(0,cm-imx)+Math.max(0,imn-cm)+Math.max(0,cf-ifx)+Math.max(0,ifn-cf))*2000;}
+        else p+=Math.abs(m.maleRatio-gmr)*weights.genderBalance*20;
+        p+=Math.abs(m.avgAcademic-gaa)*weights.academicBalance*.5;p+=Math.abs(m.avgPhysical-gap)*weights.physicalBalance*.5;
+        p+=Math.abs(m.specialSupportCount-gsp)*weights.specialSupportBalance*15;p+=Math.abs(m.leaderCount-gl)*weights.leaderDistribution*10;
+        p+=Math.abs(m.absenceCount-ga)*weights.absenceDistribution*15;p+=Math.abs(m.totalCarePoints/Math.max(classes[0].students.length,1)-gac)*weights.careBalance*10;
+    }
+    const cs=classes.map(c=>c.students.length),isn=Math.floor(ts/nc),isx=Math.ceil(ts/nc);
+    if(weights.classSizeBalance>=15){for(const sz of cs)p+=(Math.max(0,sz-isx)+Math.max(0,isn-sz))*2000;}
+    else{const avg=ts/nc;p+=cs.reduce((a,n)=>a+Math.pow(n-avg,2),0)/nc*weights.classSizeBalance*.5;}
+    const afc=Array.from(new Set(allStudents.map(s=>s.currentClass)));
+    const fcTotal=classes.map(c=>{const m=new Map();c.students.forEach(s=>m.set(s.currentClass,(m.get(s.currentClass)??0)+1));return m;});
+    const fcMaleMap=classes.map(c=>{const m=new Map();c.students.filter(s=>s.gender==='male').forEach(s=>m.set(s.currentClass,(m.get(s.currentClass)??0)+1));return m;});
+    const fcFemaleMap=classes.map(c=>{const m=new Map();c.students.filter(s=>s.gender==='female').forEach(s=>m.set(s.currentClass,(m.get(s.currentClass)??0)+1));return m;});
+    for(const fc of afc){
+        const cnt=fcTotal.map(m=>m.get(fc)??0);const av=cnt.reduce((a,b)=>a+b,0)/nc;
+        p+=cnt.reduce((a,c)=>a+Math.pow(c-av,2),0)/nc*weights.formerClassMix*2;
+        const mcnt=fcMaleMap.map(m=>m.get(fc)??0);const mav=mcnt.reduce((a,b)=>a+b,0)/nc;
+        if(mav>0){p+=mcnt.reduce((a,c)=>a+Math.pow(c-mav,2),0)/nc*weights.formerClassMix*3;mcnt.forEach(c=>{if(mav>=1&&c===0)p+=weights.formerClassMix*25;});}
+        const fmcnt=fcFemaleMap.map(m=>m.get(fc)??0);const fav=fmcnt.reduce((a,b)=>a+b,0)/nc;
+        if(fav>0){p+=fmcnt.reduce((a,c)=>a+Math.pow(c-fav,2),0)/nc*weights.formerClassMix*3;fmcnt.forEach(c=>{if(fav>=1&&c===0)p+=weights.formerClassMix*25;});}
+    }
+    const ppc=metrics.map(m=>m.pianoCount);p+=ppc.filter(c=>c===0).length*weights.pianoDistribution*50;
+    const pavg=ppc.reduce((a,b)=>a+b,0)/nc;p+=ppc.reduce((a,c)=>a+Math.pow(c-pavg,2),0)/nc*weights.pianoDistribution*5;
+    ['learning','behavior','relationship','family','health'].forEach(cat=>{metrics.forEach(m=>{const sc=m.careByCategory[cat]?.severeCount??0;if(sc>=2)p+=(sc-1)*weights.careBalance*80;});});
+    const scm=new Map();classes.forEach(c=>c.students.forEach(s=>scm.set(s.id,c.classNumber)));
+    for(const cn of constraints){const ca=scm.get(cn.studentA),cb2=scm.get(cn.studentB);if(ca===undefined||cb2===undefined)continue;const same=ca===cb2;if(cn.type==='ng'&&same)p+=cn.priority==='required'?500:100;if(cn.type==='ok'&&!same)p+=cn.priority==='required'?120:40;}
+    return Math.max(0,B-p);
+}
+
+function getViolatedConstraints(classes,constraints){const m=new Map();classes.forEach(c=>c.students.forEach(s=>m.set(s.id,c.classNumber)));return constraints.filter(cn=>{const a=m.get(cn.studentA),b=m.get(cn.studentB);if(a===undefined||b===undefined)return false;return(cn.type==='ng'&&a===b)||(cn.type==='ok'&&a!==b);});}
+
+// GA
+function chromosomeToClasses(ch,st,nc){const cl=Array.from({length:nc},(_,i)=>({classNumber:i+1,students:[]}));for(let i=0;i<st.length;i++)cl[ch[i]].students.push(st[i]);return cl;}
+function createRandomChromosome(st,nc){const ch=new Array(st.length).fill(0);const ml=st.map((s,i)=>({s,i})).filter(x=>x.s.gender==='male');const fl=st.map((s,i)=>({s,i})).filter(x=>x.s.gender==='female');[...ml].sort(()=>Math.random()-.5).forEach((m,i)=>{ch[m.i]=i%nc;});[...fl].sort(()=>Math.random()-.5).forEach((f,i)=>{ch[f.i]=i%nc;});return ch;}
+function crossover(p1,p2){return p1.map((g,i)=>Math.random()<.5?g:p2[i]);}
+function mutate(ch,nc){const m=[...ch];const i1=Math.floor(Math.random()*m.length);let i2=Math.floor(Math.random()*m.length);while(i2===i1)i2=Math.floor(Math.random()*m.length);[m[i1],m[i2]]=[m[i2],m[i1]];return m;}
+
+function repairClassSizes(ch,students,nc){const r=[...ch];const iMin=Math.floor(students.length/nc),iMax=Math.ceil(students.length/nc);const ci=Array.from({length:nc},()=>[]);for(let i=0;i<r.length;i++)ci[r[i]].push(i);for(let it=0;it<200;it++){let moved=false;for(let f=0;f<nc;f++){while(ci[f].length>iMax){const t=ci.findIndex((c,i2)=>i2!==f&&c.length<iMin);if(t===-1)break;const si=ci[f].pop();ci[t].push(si);r[si]=t;moved=true;}}if(!moved)break;}return r;}
+
+function repairGenderBalance(ch,students,nc){const r=[...ch];const mt=students.filter(s=>s.gender==='male').length,ft=students.length-mt;const imn=Math.floor(mt/nc),imx=Math.ceil(mt/nc),ifn=Math.floor(ft/nc),ifx=Math.ceil(ft/nc);const cm=Array.from({length:nc},()=>[]),cf=Array.from({length:nc},()=>[]);for(let i=0;i<r.length;i++){if(students[i].gender==='male')cm[r[i]].push(i);else cf[r[i]].push(i);}for(let it=0;it<300;it++){let sw=false;for(let f=0;f<nc;f++){if(cm[f].length>imx&&cf[f].length<ifx){const t=cm.findIndex((m,i2)=>i2!==f&&m.length<imn&&cf[i2].length>ifn);if(t===-1)continue;const mi=cm[f].pop(),fi=cf[t].pop();r[mi]=t;r[fi]=f;cm[t].push(mi);cf[f].push(fi);sw=true;}}if(!sw)break;}return r;}
+
+async function optimizeClassAssignment(students,config,onProgress){
+    const{numClasses:nc,weights,constraints,populationSize:ps,generations:gen,eliteCount:ec,numPlans:np}=config;
+    let pop=Array.from({length:ps},()=>createRandomChromosome(students,nc));
+    const ev=ch=>{const cl=chromosomeToClasses(ch,students,nc);return scoreAssignment(cl,students,weights,constraints);};
+    let scores=pop.map(ev);
+    const tp=(p,s)=>()=>{const ts=5;let b=Math.floor(Math.random()*p.length);for(let t=1;t<ts;t++){const c=Math.floor(Math.random()*p.length);if(s[c]>s[b])b=c;}return p[b];};
+    const ep=[];
+    for(let g=0;g<gen;g++){
+        if(g%10===0){onProgress?.(g/gen);await new Promise(r=>setTimeout(r,0));}
+        const ranked=scores.map((s,i)=>({s,i})).sort((a,b)=>b.s-a.s);
+        for(let k=0;k<Math.min(3,ec);k++)ep.push({chromosome:pop[ranked[k].i],score:ranked[k].s});
+        const elites=ranked.slice(0,ec).map(r=>pop[r.i]);const next=[...elites];const pick=tp(pop,scores);
+        while(next.length<ps){let child=crossover(pick(),pick());if(Math.random()<(config.mutationRate??.05)*10)child=mutate(child,nc);next.push(child);}
+        pop=next.slice(0,ps);scores=pop.map(ev);
+    }
+    onProgress?.(1);
+    const uq=ep.sort((a,b)=>b.score-a.score).slice(0,np*10);const sel=[];
+    for(const plan of uq){if(sel.length>=np)break;if(!sel.length){sel.push(plan);continue;}const div=sel.every(s=>{let d=0;for(let i=0;i<plan.chromosome.length;i++)if(plan.chromosome[i]!==s.chromosome[i])d++;return d/plan.chromosome.length>.1;});if(div)sel.push(plan);}
+    const fp=pop.map((c,i)=>({chromosome:c,score:scores[i]})).sort((a,b)=>b.score-a.score);for(const p of fp){if(sel.length>=np)break;sel.push(p);}
+    const now=new Date();
+    return sel.slice(0,np).map((p,pi)=>{
+        let ch=p.chromosome;if(weights.classSizeBalance>=15)ch=repairClassSizes(ch,students,nc);if(weights.genderBalance>=15)ch=repairGenderBalance(ch,students,nc);
+        const cl=chromosomeToClasses(ch,students,nc);const stats=cl.map(c=>calcClassStats(c));const vio=getViolatedConstraints(cl,constraints);
+        return{id:`plan_${pi+1}`,score:p.score,classes:cl,stats,violatedConstraints:vio,generatedAt:now};
+    });
+}
+
+// Excel読み込み - あいまい列名マッチング + 表記自動推定
+const FUZZY_COLUMN_RULES=[
+    {field:'name',keywords:['氏名','名前','生徒名','児童名','フルネーム','姓名','名称']},
+    {field:'gender',keywords:['性別','男女','sex']},
+    {field:'currentClass',keywords:['現クラス','前クラス','旧クラス','クラス','組','学級','現在の組','現組','所属']},
+    {field:'assignedClass',keywords:['編成クラス','新クラス','新組','配属クラス','配属先','新しい組']},
+    {field:'academicRaw',keywords:['学力','総合学力','成績','学力評価','成績評定','総合評定','総合成績','学力総合','評定平均','評定']},
+    {field:'subject_国語',keywords:['国語']},
+    {field:'subject_算数',keywords:['算数']},
+    {field:'subject_数学',keywords:['数学']},
+    {field:'subject_英語',keywords:['英語']},
+    {field:'subject_理科',keywords:['理科']},
+    {field:'subject_社会',keywords:['社会']},
+    {field:'subject_音楽',keywords:['音楽']},
+    {field:'subject_体育',keywords:['体育']},
+    {field:'subject_図工',keywords:['図工','図画工作']},
+    {field:'subject_技術',keywords:['技術']},
+    {field:'subject_家庭',keywords:['家庭','家庭科']},
+    {field:'subject_美術',keywords:['美術']},
+    {field:'physicalRaw',keywords:['運動','体力','体力テスト','運動能力','50m走','50m','体力テスト結果','体育テスト','運動テスト','新体力テスト']},
+    {field:'canPlayPiano',keywords:['ピアノ','伴奏','ピアノ伴奏','ピアノ伴奏可','合唱伴奏','鍵盤']},
+    {field:'isLeader',keywords:['リーダー','リーダー性','リーダーシップ','班長','委員長','学級委員']},
+    {field:'hasSpecialSupport',keywords:['特別支援','特支','特別支援対象','特別支援学級','支援対象','支援','要支援','通級']},
+    {field:'hasTendencyAbsence',keywords:['不登校','不登校傾向','長期欠席','不登校傾向あり','欠席がち','登校しぶり','別室登校']},
+    {field:'careFlag',keywords:['要配慮','配慮','配慮事項','配慮あり','特記事項','特記','要注意']},
+    {field:'behavior',keywords:['生徒指導','生活指導','問題行動','行動面','素行']},
+    {field:'care_learning',keywords:['配慮:学習支援','学習支援','学習配慮','学習面','LD','学習障害']},
+    {field:'care_behavior',keywords:['配慮:生活指導','生活指導配慮','行動配慮','行動面配慮']},
+    {field:'care_relationship',keywords:['配慮:人間関係','人間関係','友人関係','対人関係','交友関係','いじめ','対人']},
+    {field:'care_family',keywords:['配慮:家庭環境','家庭環境','家庭状況','家庭','家庭的配慮','保護者対応','家庭事情']},
+    {field:'care_health',keywords:['配慮:健康・心理','健康・心理','健康','心理','メンタル','健康面','アレルギー','持病']},
+    {field:'selectedSubject',keywords:['選択科目','選択','選択教科']},
+    {field:'course',keywords:['コース','科','コース/科','学科','専攻']},
+    {field:'commutingGroup',keywords:['通学班','地区','通学班/地区','通学路','登校班','スクールバス']},
+    {field:'note',keywords:['備考','メモ','その他','自由記述','特記事項欄','コメント','ノート']},
+];
+
+function fuzzyMatchColumn(header) {
+    const h = header.trim();
+    for (const rule of FUZZY_COLUMN_RULES) {
+        if (rule.keywords.includes(h)) return rule.field;
+    }
+    for (const rule of FUZZY_COLUMN_RULES) {
+        for (const kw of rule.keywords) {
+            if (h.includes(kw) || kw.includes(h)) return rule.field;
+        }
+    }
+    return null;
+}
+
+function normalizeFlagBool(v) {
+    if (v === undefined || v === null || v === '') return false;
+    const s = String(v).trim();
+    return s==='○'||s==='◯'||s==='〇'||s==='◎'||s==='●'||s==='✓'||s==='✔'||s==='true'||s==='TRUE'||s==='1'||s==='有'||s==='あり'||s==='該当'||s==='Yes'||s==='yes'||s==='Y'||s==='y'||s==='丸'||s==='マル'||v===true||v===1;
+}
+
+function inferAcademicTypeFromValues(values) {
+    if (!values.length) return null;
+    const strs = values.map(v => String(v).trim());
+    if (strs.some(v => ['◎','○','△','×'].includes(v))) return 'scale_3';
+    if (strs.some(v => ['A','B','C','D','E'].includes(v.toUpperCase()))) return 'scale_5';
+    const nums = strs.map(v => parseFloat(v)).filter(n => !isNaN(n));
+    if (!nums.length) return null;
+    const maxVal = Math.max(...nums);
+    const minVal = Math.min(...nums);
+    if (maxVal > 100) return 'points_500';
+    if (maxVal > 10) {
+        if (maxVal <= 80 && minVal >= 20) return 'deviation';
+        return 'points_100';
+    }
+    if (maxVal <= 3) return 'scale_3';
+    if (maxVal <= 5) return 'scale_5';
+    return null;
+}
+
+function inferPhysicalTypeFromValues(values) {
+    if (!values.length) return null;
+    const strs = values.map(v => String(v).trim());
+    if (strs.some(v => ['A','B','C','D','E'].includes(v.toUpperCase()))) return 'grade_AE';
+    if (strs.some(v => ['○','◯','◎'].includes(v)) && strs.some(v => v === '' || v === undefined)) return 'flag';
+    const nums = strs.map(v => parseFloat(v)).filter(n => !isNaN(n));
+    if (!nums.length) return null;
+    const maxVal = Math.max(...nums);
+    if (maxVal <= 5) return 'scale_5';
+    return 'numeric';
+}
+
+function parseExcelData(data, config) {
+    if (data.length < 2) return { students: [], unknownColumns: [], inferredAcademicType: null, inferredPhysicalType: null };
+    const headers = data[0].map(h => String(h ?? '').trim());
+    const rows = data.slice(1);
+    const fm = {};
+    const uc = [];
+    headers.forEach((h, i) => {
+        if (!h) return;
+        const matched = fuzzyMatchColumn(h);
+        if (matched) fm[i] = matched;
+        else uc.push(h);
+    });
+
+    const acVals = [], phVals = [];
+    const acIdx = Object.entries(fm).find(([,f]) => f === 'academicRaw')?.[0];
+    const phIdx = Object.entries(fm).find(([,f]) => f === 'physicalRaw')?.[0];
+    const subIdxs = Object.entries(fm).filter(([,f]) => f.startsWith('subject_')).map(([i]) => parseInt(i));
+    rows.slice(0, 50).forEach(row => {
+        if (acIdx !== undefined) { const v = row[parseInt(acIdx)]; if (v !== undefined && v !== null && v !== '') acVals.push(v); }
+        subIdxs.forEach(si => { const v = row[si]; if (v !== undefined && v !== null && v !== '') acVals.push(v); });
+        if (phIdx !== undefined) { const v = row[parseInt(phIdx)]; if (v !== undefined && v !== null && v !== '') phVals.push(v); }
+    });
+    const inferredAT = inferAcademicTypeFromValues(acVals);
+    const inferredPT = inferPhysicalTypeFromValues(phVals);
+    const useAT = inferredAT || config.academicInputType;
+    const usePT = inferredPT || config.physicalInputType;
+
+    const students = rows.filter(r => r.some(c => c !== undefined && c !== null && c !== '')).map((row, ri) => {
+        const s = { id: `S${String(ri + 1).padStart(4, '0')}`, academicSubjects: {}, careCategories: {} };
+        for (const [is, field] of Object.entries(fm)) {
+            const v = row[parseInt(is)];
+            if (v === undefined || v === null || v === '') continue;
+            if (field === 'name') s.name = String(v);
+            else if (field === 'gender') { const gs = String(v).trim(); s.gender = ['男','男性','M','male','1','♂'].includes(gs) ? 'male' : 'female'; }
+            else if (field === 'currentClass') s.currentClass = parseInt(String(v)) || 1;
+            else if (field === 'assignedClass') { const ac = parseInt(String(v)); if (ac >= 1) s.assignedClass = ac; }
+            else if (field === 'academicRaw') s.academicRaw = v;
+            else if (field === 'physicalRaw') s.physicalRaw = v;
+            else if (field === 'canPlayPiano') s.canPlayPiano = normalizeFlagBool(v);
+            else if (field === 'isLeader') s.isLeader = normalizeFlagBool(v);
+            else if (field === 'hasSpecialSupport') s.hasSpecialSupport = normalizeFlagBool(v);
+            else if (field === 'hasTendencyAbsence') s.hasTendencyAbsence = normalizeFlagBool(v);
+            else if (field === 'careFlag') s.careFlag = normalizeFlagBool(v);
+            else if (field === 'behavior') { s.careFlag = normalizeFlagBool(v); if (!s.careCategories) s.careCategories = {}; if (normalizeFlagBool(v)) s.careCategories.behavior = 2; }
+            else if (field === 'selectedSubject') s.selectedSubject = String(v);
+            else if (field === 'course') s.course = String(v);
+            else if (field === 'commutingGroup') s.commutingGroup = String(v);
+            else if (field === 'note') s.note = String(v);
+            else if (field.startsWith('subject_')) s.academicSubjects[field.replace('subject_', '')] = v;
+            else if (field.startsWith('care_')) {
+                const cn = field.replace('care_', '');
+                const nv = parseInt(String(v));
+                if (nv >= 1 && nv <= 3) { if (!s.careCategories) s.careCategories = {}; s.careCategories[cn] = nv; }
+                else if (normalizeFlagBool(v)) { if (!s.careCategories) s.careCategories = {}; s.careCategories[cn] = 2; }
+            }
+        }
+        if (!s.name) s.name = `生徒${ri + 1}`;
+        if (!s.gender) s.gender = 'male';
+        if (!s.currentClass) s.currentClass = 1;
+        if (!Object.keys(s.academicSubjects).length) delete s.academicSubjects;
+        if (!Object.keys(s.careCategories).length) delete s.careCategories;
+        return s;
+    });
+    return { students: normalizeStudents(students, useAT, usePT), unknownColumns: uc, inferredAcademicType: inferredAT, inferredPhysicalType: inferredPT };
+}
+function readExcelFile(file,config){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=e=>{try{const d=new Uint8Array(e.target.result);const wb=XLSX.read(d,{type:'array'});const sn=wb.SheetNames.find(n=>n==='全児童データ')??wb.SheetNames.find(n=>n.includes('名簿')||n.includes('生徒')||n.includes('児童'))??wb.SheetNames[0];const ws=wb.Sheets[sn];const jd=XLSX.utils.sheet_to_json(ws,{header:1});resolve(parseExcelData(jd,config));}catch(err){reject(err);}};r.onerror=reject;r.readAsArrayBuffer(file);});}
+function exportToExcel(planName,classData){const wb=XLSX.utils.book_new();const sd=classData.map(c=>({'クラス':`${c.classNumber}組`,'人数':c.students.length,'男子':c.students.filter(s=>s.gender==='male').length,'女子':c.students.filter(s=>s.gender==='female').length,'学力平均':(c.students.reduce((a,s)=>a+(s.normalizedAcademic??50),0)/c.students.length).toFixed(1),'配慮Pt合計':c.students.reduce((a,s)=>a+(s.totalCarePoints??0),0)}));XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sd),'概要');for(const c of classData){const rows=c.students.map((s,i)=>({'番号':i+1,'氏名':s.name,'性別':s.gender==='male'?'男':'女','旧クラス':s.currentClass,'学力':(s.normalizedAcademic??50).toFixed(1),'運動':(s.normalizedPhysical??50).toFixed(1),'ピアノ':s.canPlayPiano?'○':'','リーダー':s.isLeader?'○':'','特支':s.hasSpecialSupport?'○':'','不登校':s.hasTendencyAbsence?'○':'','配慮Pt':s.totalCarePoints??0,'備考':s.note??''}));XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),`${c.classNumber}組`);}const allRows=[];for(const c of classData){for(const s of c.students){const row={'氏名':s.name,'性別':s.gender==='male'?'男':'女','旧クラス':s.currentClass,'編成クラス':c.classNumber,'学力':s.academicRaw??'','運動':s.physicalRaw??'','ピアノ':s.canPlayPiano?'○':'','リーダー':s.isLeader?'○':'','特別支援':s.hasSpecialSupport?'○':'','不登校':s.hasTendencyAbsence?'○':''};if(s.careCategories){if(s.careCategories.learning)row['配慮:学習支援']=s.careCategories.learning;if(s.careCategories.behavior)row['配慮:生活指導']=s.careCategories.behavior;if(s.careCategories.relationship)row['配慮:人間関係']=s.careCategories.relationship;if(s.careCategories.family)row['配慮:家庭環境']=s.careCategories.family;if(s.careCategories.health)row['配慮:健康・心理']=s.careCategories.health;}if(s.commutingGroup)row['通学班']=s.commutingGroup;row['備考']=s.note??'';allRows.push(row);}}XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(allRows),'全児童データ');XLSX.writeFile(wb,`${planName}_${new Date().toISOString().slice(0,10)}.xlsx`);}
+
+// ============================================================
+// セッション保存・復元
+// ============================================================
+const SESSION_KEY='ai_class_assistant_session';
+function saveSessionToStorage(data){try{localStorage.setItem(SESSION_KEY,JSON.stringify(data));return true;}catch(e){console.error('Session save failed:',e);return false;}}
+function loadSessionFromStorage(){try{const d=localStorage.getItem(SESSION_KEY);return d?JSON.parse(d):null;}catch(e){return null;}}
+function clearSessionStorage(){localStorage.removeItem(SESSION_KEY);}
+function exportSessionToFile(data){const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`クラス編成セッション_${new Date().toISOString().slice(0,10)}.json`;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);}
+function importSessionFromFile(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=e=>{try{resolve(JSON.parse(e.target.result));}catch(err){reject(err);}};r.onerror=reject;r.readAsText(file);});}
+
+// ============================================================
+// コンポーネント
+// ============================================================
+function Header({currentStep}){const S=[{label:'校種選択'},{label:'データ確認'},{label:'条件設定'},{label:'結果確認'}];return(<div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg"><div className="max-w-7xl mx-auto px-6 py-4"><div className="flex items-center justify-between mb-4"><div className="flex items-center gap-3"><div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-2xl">👥</div><div><h1 className="text-2xl font-bold">AIクラス編成アシスタント</h1><p className="text-sm text-blue-100">完全オフライン | 文科省ガイドライン準拠</p></div></div></div><div className="flex items-center gap-2">{S.map((s,i)=>{const active=i===currentStep,done=i<currentStep;return(<React.Fragment key={i}><div className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${active?'bg-white text-blue-700 shadow-md':done?'bg-blue-500 text-white':'bg-blue-700 text-blue-200'}`}><div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${active?'bg-blue-600 text-white':done?'bg-white text-blue-600':'bg-blue-600 text-white'}`}>{done?'✓':i}</div><span className="text-sm font-medium">{s.label}</span></div>{i<S.length-1&&<div className="text-blue-300">→</div>}</React.Fragment>);})}</div></div></div>);}
+
+// StudentCard
+function StudentCard({student,isDragging,onDragStart,onDragEnd,compact}){
+    const tp=student.totalCarePoints??0;
+    if(compact){return(<div draggable onDragStart={e=>onDragStart?.(e,student.id)} onDragEnd={onDragEnd} className={`flex items-center gap-1.5 px-2 py-1 bg-white border rounded-lg cursor-grab text-xs select-none transition-all ${isDragging?'opacity-40 border-dashed':'border-gray-200 hover:border-blue-300 hover:shadow-sm'}`}>
+        <span className={`w-1.5 h-1.5 rounded-full ${student.gender==='male'?'bg-blue-500':'bg-pink-500'}`}></span>
+        <span className="font-medium truncate">{student.name}</span>
+        {student.canPlayPiano&&<span className="text-purple-500" title="ピアノ">♪</span>}
+        {student.isLeader&&<span className="text-yellow-500" title="リーダー">★</span>}
+        {tp>0&&<span className="text-red-500 font-bold" title={`配慮${tp}pt`}>!</span>}
+    </div>);}
+    return(<div draggable onDragStart={e=>onDragStart?.(e,student.id)} onDragEnd={onDragEnd} className={`bg-white border rounded-lg p-2.5 cursor-grab select-none transition-all ${isDragging?'opacity-40 shadow-none border-dashed':'border-gray-200 hover:border-blue-300 hover:shadow-md'}`}>
+        <div className="flex justify-between items-center mb-2"><span className="font-medium text-sm">{student.name}</span><span className="text-xs text-gray-500">{student.currentClass}組</span></div>
+        <div className="flex gap-1 flex-wrap">
+            {student.canPlayPiano&&<span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">♪ピアノ</span>}
+            {student.isLeader&&<span className="px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs">★リーダー</span>}
+            {student.hasSpecialSupport&&<span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">特支</span>}
+            {student.hasTendencyAbsence&&<span className="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">不登校</span>}
+            {tp>0&&<span className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-xs">{tp}pt</span>}
+        </div>
+    </div>);
+}
+
+// ClassColumn
+function ClassColumn({classData,draggingStudentId,onDragStart,onDragEnd,onDrop,hasPianoWarning,violations=[],allStudents=[]}){
+    const[isDragOver,setIsDragOver]=useState(false);
+    const cc=CLASS_COLORS[(classData.classNumber-1)%CLASS_COLORS.length];
+    const mc=classData.students.filter(s=>s.gender==='male').length,fc=classData.students.length-mc;
+    const pianoCount=classData.students.filter(s=>s.canPlayPiano).length;
+    const csids=new Set(classData.students.map(s=>s.id));
+    const cvio=violations.filter(c=>csids.has(c.studentA)||csids.has(c.studentB));
+    const getName=id=>allStudents.find(s=>s.id===id)?.name??id;
+    return(<div onDragOver={e=>{e.preventDefault();setIsDragOver(true);}} onDragLeave={()=>setIsDragOver(false)} onDrop={e=>{setIsDragOver(false);onDrop(e,classData.classNumber);}} className={`flex flex-col min-h-64 rounded-xl border-2 transition-all ${isDragOver?'border-blue-400 bg-blue-50 shadow-lg':hasPianoWarning||cvio.length?'border-red-300 bg-red-50':'border-gray-200 bg-gray-50'}`}>
+        <div className="px-3 py-2 rounded-t-xl" style={{backgroundColor:cc+'15',borderBottom:`2px solid ${cc}`}}>
+            <div className="flex items-center justify-between"><span className="font-bold" style={{color:cc}}>{classData.classNumber}組</span><div className="flex gap-2 text-xs"><span className="text-blue-600">♂{mc}</span><span className="text-pink-600">♀{fc}</span><span className="font-bold text-gray-700">{classData.students.length}名</span></div></div>
+        </div>
+        {(hasPianoWarning||cvio.length>0)&&<div className="px-3 py-1.5 bg-red-100 text-xs space-y-1">
+            {hasPianoWarning&&<div className="text-red-700 font-medium">🎹 ピアノ {pianoCount}名 — 奏者がいません</div>}
+            {cvio.map((c,i)=><div key={i} className="text-red-600"><span className={`inline-block px-1 rounded text-xs font-bold mr-1 ${c.type==='ng'?'bg-red-200':'bg-green-200'}`}>{c.type==='ng'?'NG':'OK'}</span>{getName(c.studentA)} ↔ {getName(c.studentB)}{c.type==='ng'?' (同クラス禁止)':' (別クラス指定)'}</div>)}
+        </div>}
+        {isDragOver&&<div className="mx-3 my-1 p-2 border-2 border-dashed border-blue-400 rounded text-center text-xs text-blue-600 bg-blue-50">ここにドロップ</div>}
+        <div className="flex-1 p-2 space-y-1 overflow-y-auto max-h-96">
+            {classData.students.map(s=><StudentCard key={s.id} student={s} isDragging={draggingStudentId===s.id} onDragStart={(e,id)=>onDragStart(e,id,classData.classNumber)} onDragEnd={onDragEnd} compact />)}
+            {!classData.students.length&&!isDragOver&&<div className="text-center text-gray-400 text-xs py-4">生徒がいません</div>}
+        </div>
+    </div>);
+}
+
+// StatsCard
+function StatsCard({stats}){
+    const cc=CLASS_COLORS[(stats.classNumber-1)%CLASS_COLORS.length];const cats=['learning','behavior','relationship','family','health'];
+    return(<div className="bg-white rounded-xl border-2 border-gray-200 p-4 hover:shadow-lg transition-all">
+        <div className="flex items-center justify-between mb-3" style={{borderBottom:`3px solid ${cc}`,paddingBottom:'8px'}}><div className="flex items-center gap-2"><div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-lg" style={{backgroundColor:cc}}>{stats.classNumber}</div><span className="font-bold text-gray-800">{stats.classNumber}組</span></div><span className="text-2xl font-bold text-gray-700">{stats.total}名</span></div>
+        <div className="space-y-1.5 text-sm">
+            <div className="flex justify-between items-center"><span className="text-gray-600">男女比</span><div className="flex items-center gap-2"><div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-blue-500" style={{width:`${stats.maleRatio*100}%`}}></div></div><span className="text-xs font-medium text-gray-700">♂{stats.maleCount}/♀{stats.femaleCount}</span></div></div>
+            <div className="flex justify-between items-center"><span className="text-gray-600">学力平均</span><div className="flex items-center gap-2"><div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-green-500" style={{width:`${stats.avgAcademic}%`}}></div></div><span className="text-xs font-medium">{stats.avgAcademic}</span></div></div>
+            <div className="flex justify-between items-center"><span className="text-gray-600">運動平均</span><div className="flex items-center gap-2"><div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-orange-500" style={{width:`${stats.avgPhysical}%`}}></div></div><span className="text-xs font-medium">{stats.avgPhysical}</span></div></div>
+            <div className="flex justify-between"><span className="text-gray-600">ピアノ</span><span className={`font-medium ${stats.pianoCount?'text-purple-600':'text-red-600 font-bold'}`}>{stats.pianoCount}名{!stats.pianoCount&&' ⚠'}</span></div>
+            <div className="flex justify-between"><span className="text-gray-600">リーダー</span><span className="font-medium">{stats.leaderCount}名</span></div>
+            <div className="flex justify-between"><span className="text-gray-600">特別支援</span><span className="font-medium">{stats.specialSupportCount}名</span></div>
+            <div className="flex justify-between"><span className="text-gray-600">不登校傾向</span><span className="font-medium">{stats.absenceTendencyCount}名</span></div>
+            <div className="flex justify-between"><span className="text-gray-600">配慮Pt</span><span className="font-medium">{stats.totalCarePoints}pt</span></div>
+        </div>
+        {Object.keys(stats.categoryBreakdown).length>0&&<div className="mt-3 pt-3 border-t border-gray-200"><div className="text-xs font-medium text-gray-600 mb-1">配慮カテゴリ</div><div className="flex flex-wrap gap-1">{cats.map(cat=>{const d=stats.categoryBreakdown[cat];if(!d)return null;return(<div key={cat} className="px-2 py-0.5 rounded text-xs font-medium" style={{backgroundColor:CARE_COLORS[cat]+'20',color:CARE_COLORS[cat]}}>{CARE_CATEGORY_LABELS[cat].slice(0,2)} {d.count}{d.severe>0&&` (!${d.severe})`}</div>);})}</div></div>}
+        {Object.keys(stats.formerClasses).length>0&&<div className="mt-3 pt-3 border-t border-gray-200"><div className="text-xs font-medium text-gray-600 mb-1">旧クラス出身</div><div className="flex flex-wrap gap-1">{Object.entries(stats.formerClasses).sort(([a],[b])=>a-b).map(([c,n])=><span key={c} className="px-2 py-0.5 bg-gray-100 rounded text-xs">{c}組:{n.total}名<span className="text-blue-600 ml-0.5">♂{n.male}</span><span className="text-pink-600 ml-0.5">♀{n.female}</span></span>)}</div></div>}
+    </div>);
+}
+
+// SchoolSelect - 進学モード対応
+function SchoolSelect({onSelect,savedSession,onResumeSession,onImportSession,onClearSession}){
+    const[mode,setMode]=useState('normal');const[selected,setSelected]=useState(null);const[srcSel,setSrcSel]=useState(null);const[dstSel,setDstSel]=useState(null);const importRef=useRef(null);
+    const schoolTypes=['elementary','middle','high'];
+    const handleGo=(sample)=>{if(mode==='normal'){if(!selected)return;onSelect(selected,sample);}else{if(!srcSel||!dstSel)return;onSelect(dstSel,sample,{isTransition:true,sourceSchoolType:srcSel});}};
+    const isReady=mode==='normal'?!!selected:(!!srcSel&&!!dstSel);
+    return(<div className="max-w-6xl mx-auto px-6 py-8">
+        <div className="text-center mb-8"><h2 className="text-3xl font-bold text-gray-800 mb-2">校種を選択してください</h2><p className="text-gray-600">選択した校種に合わせて、データ形式と最適化パラメータが自動設定されます</p></div>
+        {savedSession&&<div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-2xl p-6 border-2 border-amber-300 mb-8 shadow-md"><div className="flex items-start gap-4 mb-4"><div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center text-2xl flex-shrink-0">💾</div><div><h3 className="text-lg font-bold text-gray-800">前回の作業データがあります</h3><p className="text-sm text-gray-600">{SCHOOL_LABELS[savedSession.schoolType]} | {savedSession.students?.length??0}名 | {savedSession.plans?.length??0}案生成済み</p><p className="text-xs text-gray-500 mt-1">保存日時: {new Date(savedSession.savedAt).toLocaleString('ja-JP')}</p></div></div><div className="flex flex-wrap gap-3"><button onClick={()=>onResumeSession(savedSession)} className="px-6 py-2.5 bg-amber-500 text-white font-bold rounded-xl hover:bg-amber-600 transition-colors shadow-sm">再開する</button><button onClick={()=>exportSessionToFile(savedSession)} className="px-4 py-2.5 bg-white text-gray-700 border border-gray-300 rounded-xl hover:bg-gray-50 text-sm font-medium">📁 JSONで保存</button><button onClick={onClearSession} className="px-4 py-2.5 bg-white text-red-600 border border-red-200 rounded-xl hover:bg-red-50 text-sm font-medium">削除</button></div></div>}
+        <input type="file" ref={importRef} accept=".json" onChange={async(e)=>{const f=e.target.files?.[0];if(f){await onImportSession(f);e.target.value='';}}} className="hidden"/>
+        <div className="flex gap-3 justify-center mb-8">
+            <button onClick={()=>{setMode('normal');setSelected(null);setSrcSel(null);setDstSel(null);}} className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all border-2 ${mode==='normal'?'bg-blue-600 text-white border-blue-600 shadow-md':'bg-white text-gray-700 border-gray-300 hover:border-blue-300'}`}>通常のクラス編成</button>
+            <button onClick={()=>{setMode('transition');setSelected(null);setSrcSel(null);setDstSel(null);}} className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all border-2 ${mode==='transition'?'bg-orange-500 text-white border-orange-500 shadow-md':'bg-white text-gray-700 border-gray-300 hover:border-orange-300'}`}>🎓 進学時の再編成</button>
+        </div>
+        {mode==='normal'&&<div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">{schoolTypes.map(type=>{const p=SCHOOL_PRESETS[type],sel=selected===type;return(<button key={type} onClick={()=>setSelected(type)} className={`relative p-6 rounded-2xl border-2 text-left transition-all hover:shadow-lg ${sel?'border-blue-600 bg-blue-50 shadow-lg':'border-gray-200 bg-white hover:border-blue-300'}`}>{sel&&<div className="absolute top-3 right-3 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-xs font-bold">✓</div>}<div className="text-3xl mb-2">{SCHOOL_ICONS[type]}</div><h3 className="text-xl font-bold text-gray-800 mb-1">{p.label}</h3><p className="text-sm text-gray-600 mb-3">{p.description}</p><div className="text-xs text-gray-500"><div className="flex justify-between"><span>サンプル規模</span><span className="font-medium">{SCHOOL_COUNTS[type]}</span></div><div className="pt-2 border-t border-gray-200 mt-1"><span>学力形式: </span><span className="font-medium text-blue-600">{ACADEMIC_TYPE_LABELS[p.defaultAcademicInput]}</span></div></div></button>);})}</div>}
+        {mode==='transition'&&<div className="bg-orange-50 rounded-2xl p-6 border border-orange-200 mb-8">
+            <div className="flex items-center gap-2 mb-4"><span className="text-2xl">🎓</span><div><h3 className="font-bold text-gray-800">進学時の再編成モード</h3><p className="text-sm text-gray-600">現在の校種のデータを進学先の校種のクラス数に再編成します</p></div></div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div><div className="flex items-center gap-2 mb-3"><span className="px-2 py-0.5 bg-gray-600 text-white rounded text-xs font-bold">現</span><span className="font-medium text-gray-700">現在の校種（データ形式）</span></div><div className="space-y-2">{schoolTypes.map(t=>{const p=SCHOOL_PRESETS[t],sel=srcSel===t;return(<button key={t} onClick={()=>setSrcSel(t)} className={`w-full p-3 rounded-xl border-2 text-left transition-all flex justify-between items-center ${sel?'border-gray-600 bg-gray-100 shadow-md':'border-gray-200 bg-white hover:border-gray-400'}`}><div className="flex items-center gap-2"><span>{SCHOOL_ICONS[t]}</span><span className="font-medium">{p.label}</span></div>{sel&&<span className="text-green-600 font-bold">✓</span>}</button>);})}</div></div>
+                <div><div className="flex items-center gap-2 mb-3"><span className="px-2 py-0.5 bg-orange-500 text-white rounded text-xs font-bold">先</span><span className="font-medium text-gray-700">進学先の校種（最適化設定）</span></div><div className="space-y-2">{schoolTypes.map(t=>{const p=SCHOOL_PRESETS[t],sel=dstSel===t,dis=t===srcSel;return(<button key={t} onClick={()=>!dis&&setDstSel(t)} disabled={dis} className={`w-full p-3 rounded-xl border-2 text-left transition-all flex justify-between items-center ${sel?'border-orange-500 bg-orange-50 shadow-md':dis?'border-gray-100 bg-gray-50 opacity-40 cursor-not-allowed':'border-gray-200 bg-white hover:border-orange-300'}`}><div className="flex items-center gap-2"><span>{SCHOOL_ICONS[t]}</span><span className="font-medium">{p.label}</span></div>{sel&&<span className="text-green-600 font-bold">✓</span>}</button>);})}</div></div>
+            </div>
+            {srcSel&&dstSel&&<div className="mt-4 p-3 bg-white rounded-lg border border-orange-200"><p className="text-sm font-medium text-orange-700">{SCHOOL_LABELS[srcSel]} → {SCHOOL_LABELS[dstSel]} への再編成</p><p className="text-xs text-gray-600 mt-1">{SCHOOL_LABELS[srcSel]}のデータ形式で読み込み、{SCHOOL_LABELS[dstSel]}の{SCHOOL_PRESETS[dstSel].defaultNumClasses}クラス編成に最適化します。クラス数は次画面で変更可能です。</p></div>}
+        </div>}
+        {isReady&&<div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-6 border border-blue-200 mb-8">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">{mode==='normal'?`${SCHOOL_PRESETS[selected].label}を選択しました`:`${SCHOOL_LABELS[srcSel]} → ${SCHOOL_LABELS[dstSel]} の再編成`}</h3>
+            <p className="text-gray-700 mb-4">データの読み込み方法を選択してください：</p>
+            <div className="flex gap-4"><button onClick={()=>handleGo(true)} className="flex-1 p-4 bg-white rounded-xl border-2 border-blue-200 hover:border-blue-400 hover:shadow-md transition-all text-left"><div className="text-2xl mb-2">📊</div><div className="font-bold text-gray-800">サンプルデータで試す</div><div className="text-sm text-gray-600">デモデータを読込</div></button><button onClick={()=>handleGo(false)} className="flex-1 p-4 bg-white rounded-xl border-2 border-green-200 hover:border-green-400 hover:shadow-md transition-all text-left"><div className="text-2xl mb-2">📂</div><div className="font-bold text-gray-800">Excelから読み込む</div><div className="text-sm text-gray-600">.xlsx / .xls ファイルを選択</div></button></div>
+        </div>}
+        <div className="flex gap-4 mb-6"><div className="flex-1 bg-gray-50 rounded-xl p-4 border border-gray-200"><div className="flex items-start gap-3"><div className="text-2xl">🔒</div><div><h4 className="font-bold text-gray-800 mb-1">完全オフライン動作</h4><p className="text-sm text-gray-600">入力されたすべてのデータはお使いのPC内にのみ保存されます。外部サーバーへの送信は一切行いません。</p></div></div></div><div className="flex-shrink-0 bg-gray-50 rounded-xl p-4 border border-gray-200 flex flex-col items-center justify-center"><div className="text-2xl mb-2">📂</div><button onClick={()=>importRef.current?.click()} className="px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 text-sm font-medium whitespace-nowrap">JSONから復元</button><p className="text-xs text-gray-500 mt-1">保存済みファイルを読込</p></div></div>
+    </div>);
+}
+
+// DataReview - Excel読み込み + 形式切替 + 旧クラス内訳
+function DataReview({students:initStudents,schoolType,academicInputType:initAT,physicalInputType:initPT,onNext,onBack,showUpload,onResumeFromExcel}){
+    const[students,setStudents]=useState(initStudents);const[at,setAT]=useState(initAT);const[pt,setPT]=useState(initPT);
+    const[isLoading,setIsLoading]=useState(false);const[error,setError]=useState(null);const[unknownCols,setUnknownCols]=useState([]);
+    const fileRef=useRef(null);
+    const[autoDetectMsg,setAutoDetectMsg]=useState(null);
+    const handleFileUpload=async(e)=>{const file=e.target.files?.[0];if(!file)return;setIsLoading(true);setError(null);setAutoDetectMsg(null);try{const r=await readExcelFile(file,{academicInputType:at,physicalInputType:pt,schoolType});setStudents(r.students);setUnknownCols(r.unknownColumns);const msgs=[];if(r.inferredAcademicType){setAT(r.inferredAcademicType);msgs.push(`学力形式を「${ACADEMIC_TYPE_LABELS[r.inferredAcademicType]}」と自動判定しました`);}if(r.inferredPhysicalType){setPT(r.inferredPhysicalType);msgs.push(`運動形式を「${PHYSICAL_TYPE_LABELS[r.inferredPhysicalType]}」と自動判定しました`);}if(msgs.length)setAutoDetectMsg(msgs.join('。')+'。');}catch{setError('Excelファイルの読み込みに失敗しました。形式を確認してください。');}finally{setIsLoading(false);}};
+    const handleTypeChange=(newAT,newPT)=>{setAT(newAT);setPT(newPT);if(students.length)setStudents(normalizeStudents(students,newAT,newPT));};
+    const total=students.length,mc=students.filter(s=>s.gender==='male').length,fc=total-mc;
+    const avgA=total?students.reduce((a,s)=>a+(s.normalizedAcademic??50),0)/total:0;
+    const pianoC=students.filter(s=>s.canPlayPiano).length;const careC=students.filter(s=>(s.totalCarePoints??0)>0).length;
+    const specC=students.filter(s=>s.hasSpecialSupport).length;const absC=students.filter(s=>s.hasTendencyAbsence).length;
+    const uniqueClasses=Array.from(new Set(students.map(s=>s.currentClass))).sort((a,b)=>a-b);
+    const hasAssignedClasses=students.length>0&&students.some(s=>s.assignedClass);
+    return(<div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex items-center justify-between mb-6"><div><h2 className="text-3xl font-bold text-gray-800 mb-1">データ確認</h2><p className="text-gray-600">読み込んだデータを確認し、入力形式を設定してください</p></div><button onClick={onBack} className="px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg">← 戻る</button></div>
+        {showUpload&&<div className="bg-blue-50 border border-blue-200 rounded-xl p-6 mb-6"><p className="font-medium text-gray-800 mb-3">Excelファイル（.xlsx / .xls）をアップロードしてください</p><input type="file" ref={fileRef} accept=".xlsx,.xls" onChange={handleFileUpload} className="hidden"/><button onClick={()=>fileRef.current?.click()} disabled={isLoading} className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">{isLoading?'読み込み中...':'ファイルを選択'}</button>{error&&<p className="text-red-600 text-sm mt-2">{error}</p>}{autoDetectMsg&&<div className="mt-3 p-3 bg-green-50 rounded-lg border border-green-200"><p className="text-sm font-medium text-green-800">✅ 自動検出</p><p className="text-sm text-green-700">{autoDetectMsg}</p><p className="text-xs text-green-600 mt-1">下の「入力形式の設定」で手動変更もできます。</p></div>}{unknownCols.length>0&&<div className="mt-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200"><p className="text-sm font-medium text-yellow-800">認識できなかった列名：</p><p className="text-sm text-yellow-700">{unknownCols.join('、')}</p><p className="text-xs text-yellow-600 mt-1">これらの列はスキップされました。上記の対応列名に変更して再アップロードすると認識されます。</p></div>}</div>}
+        {hasAssignedClasses&&onResumeFromExcel&&<div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 mb-6"><div className="flex items-start gap-4"><div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center text-2xl flex-shrink-0">📋</div><div className="flex-1"><h3 className="text-lg font-bold text-gray-800 mb-1">以前の編成結果が含まれています</h3><p className="text-sm text-gray-600 mb-3">このファイルには「編成クラス」列が含まれています。前回の編成状態を復元して、確認・編集を続けることができます。</p><div className="flex flex-wrap gap-3 items-center"><button onClick={()=>onResumeFromExcel(students,at,pt)} className="px-6 py-2.5 bg-amber-500 text-white font-bold rounded-xl hover:bg-amber-600 transition-colors shadow-sm">編成結果を復元して再開</button><span className="text-sm text-gray-500">または下のデータを確認して新規に最適化もできます</span></div></div></div></div>}
+        <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6"><h3 className="font-medium text-gray-800 mb-3">入力形式の設定</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label className="text-sm text-gray-600 block mb-1">学力データの形式</label><select value={at} onChange={e=>handleTypeChange(e.target.value,pt)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">{Object.entries(ACADEMIC_TYPE_LABELS).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></div><div><label className="text-sm text-gray-600 block mb-1">運動能力データの形式</label><select value={pt} onChange={e=>handleTypeChange(at,e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">{Object.entries(PHYSICAL_TYPE_LABELS).map(([k,l])=><option key={k} value={k}>{l}</option>)}</select></div></div></div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3"><div className="text-xs text-gray-600">総生徒数</div><div className="text-2xl font-bold text-blue-700">{total}名</div><div className="text-xs text-gray-500">男{mc}/女{fc}</div></div>
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3"><div className="text-xs text-gray-600">学力平均</div><div className="text-2xl font-bold text-green-700">{avgA.toFixed(1)}</div><div className="text-xs text-gray-500">正規化(0-100)</div></div>
+            <div className="bg-purple-50 border border-purple-200 rounded-xl p-3"><div className="text-xs text-gray-600">ピアノ伴奏</div><div className="text-2xl font-bold text-purple-700">{pianoC}名</div><div className="text-xs text-gray-500">{total?Math.round(pianoC/total*100):0}%</div></div>
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-3"><div className="text-xs text-gray-600">要配慮</div><div className="text-2xl font-bold text-orange-700">{careC}名</div><div className="text-xs text-gray-500">特支{specC}/不登校{absC}</div></div>
+        </div>
+        {uniqueClasses.length>0&&<div className="bg-white rounded-xl border border-gray-200 p-4 mb-6"><h3 className="font-medium text-gray-800 mb-3">旧クラス別生徒数</h3><div className="flex flex-wrap gap-3">{uniqueClasses.map(cls=>{const cs=students.filter(s=>s.currentClass===cls);return(<div key={cls} className="px-4 py-2 bg-gray-50 rounded-lg border border-gray-200"><span className="font-bold text-gray-700">{cls}組</span><span className="ml-2 text-lg font-bold text-blue-600">{cs.length}名</span><span className="ml-2 text-xs text-gray-500">(男{cs.filter(s=>s.gender==='male').length}/女{cs.filter(s=>s.gender==='female').length})</span></div>);})}</div></div>}
+        {students.length>0&&<div className="bg-white rounded-xl border border-gray-200 p-4 mb-6"><h3 className="font-medium text-gray-800 mb-3">生徒一覧（先頭20名）</h3><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-gray-200">{['氏名','性別','旧クラス','学力','運動','ピアノ','リーダー','特支','配慮Pt'].map(h=><th key={h} className="text-left py-2 px-3 font-medium text-gray-700">{h}</th>)}</tr></thead><tbody>{students.slice(0,20).map(s=><tr key={s.id} className="border-b border-gray-100 hover:bg-gray-50"><td className="py-2 px-3">{s.name}</td><td className="py-2 px-3"><span className={`px-2 py-0.5 rounded text-xs ${s.gender==='male'?'bg-blue-100 text-blue-700':'bg-pink-100 text-pink-700'}`}>{s.gender==='male'?'男':'女'}</span></td><td className="py-2 px-3">{s.currentClass}組</td><td className="py-2 px-3"><span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs font-medium">{(s.normalizedAcademic??50).toFixed(0)}</span></td><td className="py-2 px-3"><span className="px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs font-medium">{(s.normalizedPhysical??50).toFixed(0)}</span></td><td className="py-2 px-3">{s.canPlayPiano?'○':''}</td><td className="py-2 px-3">{s.isLeader?'○':''}</td><td className="py-2 px-3">{s.hasSpecialSupport?'○':''}</td><td className="py-2 px-3">{(s.totalCarePoints??0)>0?<span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs font-medium">{s.totalCarePoints}pt</span>:'-'}</td></tr>)}</tbody></table></div>{students.length>20&&<div className="mt-3 text-center text-sm text-gray-500">他 {students.length-20}名（全{students.length}名）</div>}</div>}
+        <div className="flex justify-end"><button onClick={()=>onNext(students,at,pt)} disabled={!students.length} className="px-8 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm">条件設定へ →</button></div>
+    </div>);
+}
+
+// Conditions - NGペア・OKペア設定UI
+function WeightSlider({label,value,onChange,description}){return(<div className="mb-3"><div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{label}</span><span className="text-lg font-bold text-blue-600">{value}</span></div>{description&&<p className="text-xs text-gray-500 mb-1">{description}</p>}<input type="range" min="0" max="15" value={value} onChange={e=>onChange(parseInt(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"/><div className="flex justify-between text-xs text-gray-400 mt-0.5"><span>0</span><span>15</span></div></div>);}
+
+function Conditions({students,schoolType,defaultWeights,defaultNumClasses,isTransition,sourceSchoolType,onStart,onBack}){
+    const[numClasses,setNumClasses]=useState(defaultNumClasses);const[weights,setWeights]=useState(defaultWeights);const[constraints,setConstraints]=useState([]);
+    const[npType,setNpType]=useState('ng');const[npPri,setNpPri]=useState('required');const[npA,setNpA]=useState('');const[npB,setNpB]=useState('');
+    const setW=(k,v)=>setWeights(p=>({...p,[k]:v}));
+    const addConstraint=()=>{if(!npA||!npB||npA===npB)return;setConstraints(p=>[...p,{id:`c_${Date.now()}`,type:npType,studentA:npA,studentB:npB,priority:npPri}]);setNpA('');setNpB('');};
+    const removeConstraint=id=>setConstraints(p=>p.filter(c=>c.id!==id));
+    const getName=id=>students.find(s=>s.id===id)?.name??id;
+    const epc=Math.ceil(students.length/numClasses);
+    return(<div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex items-center justify-between mb-6"><div><h2 className="text-3xl font-bold text-gray-800 mb-1">条件設定</h2><p className="text-gray-600">クラス数や最適化の優先度を設定してください</p></div><button onClick={onBack} className="px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg">← 戻る</button></div>
+        {isTransition&&sourceSchoolType&&<div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-6 flex items-center gap-3"><span className="text-2xl">🎓</span><div><p className="font-bold text-gray-800">進学時の再編成：{SCHOOL_LABELS[sourceSchoolType]} → {SCHOOL_LABELS[schoolType]}</p><p className="text-sm text-gray-600">デフォルトは{SCHOOL_LABELS[schoolType]}の標準（{defaultNumClasses}クラス）です。実際のクラス数に変更してください。</p></div></div>}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="space-y-6">
+                <div className="bg-white rounded-xl border border-gray-200 p-6"><h3 className="font-bold text-gray-800 mb-4">クラス数設定</h3><div className="flex items-center gap-4"><span className="text-sm text-gray-600">新クラス数:</span><button onClick={()=>setNumClasses(Math.max(2,numClasses-1))} className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-full hover:bg-gray-200 font-bold">−</button><span className="text-2xl font-bold text-blue-600 w-12 text-center">{numClasses}</span><button onClick={()=>setNumClasses(Math.min(10,numClasses+1))} className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-full hover:bg-gray-200 font-bold">+</button><span className="text-sm text-gray-600">クラス</span></div><div className="text-sm text-gray-500 mt-2">1クラスあたり約{epc}名（全{students.length}名）</div></div>
+                <div className="bg-white rounded-xl border border-gray-200 p-6"><h3 className="font-bold text-gray-800 mb-3">ペア制約の設定</h3><p className="text-sm text-gray-600 mb-4">同クラスにしたくない（NG）またはしたい（OK）生徒ペアを登録してください。</p>
+                    <div className="grid grid-cols-2 gap-3 mb-3"><div><label className="text-xs text-gray-600 block mb-1">種類</label><select value={npType} onChange={e=>setNpType(e.target.value)} className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"><option value="ng">NGペア（同クラスにしない）</option><option value="ok">OKペア（同クラスにしたい）</option></select></div><div><label className="text-xs text-gray-600 block mb-1">優先度</label><select value={npPri} onChange={e=>setNpPri(e.target.value)} className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"><option value="required">必須</option><option value="preferred">できれば</option></select></div></div>
+                    <div className="grid grid-cols-2 gap-3 mb-3"><div><label className="text-xs text-gray-600 block mb-1">生徒A</label><select value={npA} onChange={e=>setNpA(e.target.value)} className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"><option value="">-- 選択 --</option>{students.map(s=><option key={s.id} value={s.id}>{s.name}（{s.currentClass}組）</option>)}</select></div><div><label className="text-xs text-gray-600 block mb-1">生徒B</label><select value={npB} onChange={e=>setNpB(e.target.value)} className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"><option value="">-- 選択 --</option>{students.filter(s=>s.id!==npA).map(s=><option key={s.id} value={s.id}>{s.name}（{s.currentClass}組）</option>)}</select></div></div>
+                    <button onClick={addConstraint} disabled={!npA||!npB||npA===npB} className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 text-sm font-medium">ペアを追加</button>
+                    {constraints.length>0&&<div className="mt-4 space-y-2">{constraints.map(c=><div key={c.id} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg border border-gray-200"><div className="flex items-center gap-2 text-sm"><span className={`px-1.5 py-0.5 rounded text-xs font-bold text-white ${c.type==='ng'?'bg-red-500':'bg-green-500'}`}>{c.type==='ng'?'NG':'OK'}</span><span>{getName(c.studentA)}</span><span className="text-gray-400">↔</span><span>{getName(c.studentB)}</span><span className="text-xs text-gray-500 px-1.5 py-0.5 bg-gray-200 rounded">{c.priority==='required'?'必須':'できれば'}</span></div><button onClick={()=>removeConstraint(c.id)} className="text-gray-400 hover:text-red-500 text-lg">✕</button></div>)}</div>}
+                </div>
+            </div>
+            <div className="bg-white rounded-xl border border-gray-200 p-6"><h3 className="font-bold text-gray-800 mb-3">最適化の優先度</h3><p className="text-sm text-gray-600 mb-4">値が大きいほど、その条件を優先して最適化します。</p><div className="max-h-[500px] overflow-y-auto pr-2">
+                <WeightSlider label="クラス人数均等" value={weights.classSizeBalance} onChange={v=>setW('classSizeBalance',v)} description="各クラスの総人数をできるだけ揃える"/>
+                <WeightSlider label="男女比均等" value={weights.genderBalance} onChange={v=>setW('genderBalance',v)} description="各クラスの男女比を均等にする"/>
+                <WeightSlider label="学力均等" value={weights.academicBalance} onChange={v=>setW('academicBalance',v)} description="各クラスの学力平均を揃える"/>
+                <WeightSlider label="運動能力均等" value={weights.physicalBalance} onChange={v=>setW('physicalBalance',v)} description="各クラスの運動能力平均を揃える"/>
+                <WeightSlider label="ピアノ伴奏分散" value={weights.pianoDistribution} onChange={v=>setW('pianoDistribution',v)} description="各クラスにピアノ伴奏できる生徒を配置"/>
+                <WeightSlider label="リーダー分散" value={weights.leaderDistribution} onChange={v=>setW('leaderDistribution',v)} description="各クラスにリーダー気質の生徒を配置"/>
+                <WeightSlider label="配慮均等" value={weights.careBalance} onChange={v=>setW('careBalance',v)} description="配慮が必要な生徒を各クラスに均等配置"/>
+                <WeightSlider label="特別支援均等" value={weights.specialSupportBalance} onChange={v=>setW('specialSupportBalance',v)} description="特別支援が必要な生徒を均等配置"/>
+                <WeightSlider label="不登校分散" value={weights.absenceDistribution} onChange={v=>setW('absenceDistribution',v)} description="不登校傾向の生徒を分散配置"/>
+                <WeightSlider label="旧クラス分散" value={weights.formerClassMix} onChange={v=>setW('formerClassMix',v)} description="旧クラスの人数比・男女比が偏らないよう配慮"/>
+            </div></div>
+        </div>
+        <div className="mt-8 bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl p-8 text-white shadow-xl"><div className="text-center mb-4"><h3 className="text-2xl font-bold mb-2">AI最適化を開始</h3><p className="text-blue-100">遺伝的アルゴリズムにより上位5案を自動生成します</p></div><div className="flex justify-center gap-4 text-sm mb-6"><div className="bg-blue-500 px-3 py-1 rounded">個体数: {DEFAULT_GA_CONFIG.populationSize}</div><div className="bg-blue-500 px-3 py-1 rounded">世代数: {DEFAULT_GA_CONFIG.generations}</div><div className="bg-blue-500 px-3 py-1 rounded">生成案数: {DEFAULT_GA_CONFIG.numPlans}</div></div><div className="flex justify-center"><button onClick={()=>onStart(numClasses,weights,constraints)} className="px-8 py-4 bg-white text-blue-700 font-bold rounded-xl hover:bg-blue-50 transition-colors shadow-lg text-lg">最適化スタート →</button></div></div>
+    </div>);
+}
+
+// Results - 統計ビュー + ドラッグ&ドロップ編集
+function calcViolations(classes,constraints){return constraints.filter(c=>{const ca=classes.find(cl=>cl.students.some(s=>s.id===c.studentA))?.classNumber;const cb=classes.find(cl=>cl.students.some(s=>s.id===c.studentB))?.classNumber;if(ca===undefined||cb===undefined)return false;return c.type==='ng'?ca===cb:ca!==cb;});}
+function calcPianoWarnings(classes){const w=new Set();classes.forEach(c=>{if(c.students.length&&!c.students.some(s=>s.canPlayPiano))w.add(c.classNumber);});return w;}
+
+function Results({plans,constraints,allStudents,onBack,onSaveSession}){
+    const[selIdx,setSelIdx]=useState(0);const[viewMode,setViewMode]=useState('stats');
+    const[dragId,setDragId]=useState(null);const[dragFrom,setDragFrom]=useState(null);
+    const[localPlans,setLocalPlans]=useState(plans);
+    const[pianoWarnings,setPianoWarnings]=useState(new Set());const[dragViolations,setDragViolations]=useState([]);
+    const[dropAlert,setDropAlert]=useState(null);const dropAlertTimer=useRef(null);
+    const[saveMsg,setSaveMsg]=useState(null);
+    const currentPlan=localPlans[selIdx];const violated=currentPlan?.violatedConstraints??[];
+
+    useEffect(()=>{if(!currentPlan)return;setPianoWarnings(calcPianoWarnings(currentPlan.classes));setDragViolations(calcViolations(currentPlan.classes,constraints));},[selIdx,currentPlan,constraints]);
+
+    const handleDragStart=useCallback((e,studentId,fromClass)=>{setDragId(studentId);setDragFrom(fromClass);e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',studentId);},[]);
+    const handleDragEnd=useCallback(()=>{setDragId(null);setDragFrom(null);},[]);
+    const handleDrop=useCallback((e,toClass)=>{e.preventDefault();const studentId=e.dataTransfer.getData('text/plain')||dragId;if(!studentId||dragFrom===toClass)return;
+        setLocalPlans(prev=>{const np=[...prev];const plan={...np[selIdx]};const nc=plan.classes.map(c=>({...c,students:[...c.students]}));
+        const fromObj=nc.find(c=>c.classNumber===dragFrom);if(!fromObj)return prev;const si=fromObj.students.findIndex(s=>s.id===studentId);if(si===-1)return prev;const[moved]=fromObj.students.splice(si,1);
+        const toObj=nc.find(c=>c.classNumber===toClass);if(!toObj)return prev;toObj.students.push(moved);
+        plan.classes=nc;plan.stats=nc.map(c=>calcClassStats(c));np[selIdx]=plan;
+        const newPW=calcPianoWarnings(nc);const newVio=calcViolations(nc,constraints);
+        setPianoWarnings(newPW);setDragViolations(newVio);
+        const msgs=[];
+        if(newPW.size>0){Array.from(newPW).sort((a,b)=>a-b).forEach(n=>{const pc=nc.find(c=>c.classNumber===n)?.students.filter(s=>s.canPlayPiano).length??0;msgs.push({type:'piano',text:`🎹 ${n}組にピアノ奏者がいません（${pc}名）`});});}
+        newVio.forEach(v=>{const nA=allStudents.find(s=>s.id===v.studentA)?.name??v.studentA;const nB=allStudents.find(s=>s.id===v.studentB)?.name??v.studentB;if(v.type==='ng')msgs.push({type:'ng',text:`🚫 ${nA} と ${nB} が同じクラスになっています（NG制約違反）`});else msgs.push({type:'ok',text:`⚠ ${nA} と ${nB} が別クラスになっています（OK制約違反）`});});
+        const classSizes=nc.map(c=>c.students.length);const sizeMax=Math.max(...classSizes);const sizeMin=Math.min(...classSizes);
+        if(sizeMax-sizeMin>=2){const maxC=nc.filter(c=>c.students.length===sizeMax).map(c=>`${c.classNumber}組`).join('・');const minC=nc.filter(c=>c.students.length===sizeMin).map(c=>`${c.classNumber}組`).join('・');msgs.push({type:'size',text:`👥 クラス人数の差が${sizeMax-sizeMin}名あります（最多: ${maxC}=${sizeMax}名 / 最少: ${minC}=${sizeMin}名）`});}
+        const gd=nc.map(c=>({cn:c.classNumber,m:c.students.filter(s=>s.gender==='male').length,f:c.students.filter(s=>s.gender==='female').length}));
+        const mMax=Math.max(...gd.map(c=>c.m));const mMin=Math.min(...gd.map(c=>c.m));
+        const fMax=Math.max(...gd.map(c=>c.f));const fMin=Math.min(...gd.map(c=>c.f));
+        if(mMax-mMin>=2){const hi=gd.filter(c=>c.m===mMax).map(c=>`${c.cn}組`).join('・');const lo=gd.filter(c=>c.m===mMin).map(c=>`${c.cn}組`).join('・');msgs.push({type:'gender',text:`♂ 男子の人数差が${mMax-mMin}名あります（最多: ${hi}=${mMax}名 / 最少: ${lo}=${mMin}名）`});}
+        if(fMax-fMin>=2){const hi=gd.filter(c=>c.f===fMax).map(c=>`${c.cn}組`).join('・');const lo=gd.filter(c=>c.f===fMin).map(c=>`${c.cn}組`).join('・');msgs.push({type:'gender',text:`♀ 女子の人数差が${fMax-fMin}名あります（最多: ${hi}=${fMax}名 / 最少: ${lo}=${fMin}名）`});}
+        if(msgs.length>0){setDropAlert(msgs);if(dropAlertTimer.current)clearTimeout(dropAlertTimer.current);dropAlertTimer.current=setTimeout(()=>setDropAlert(null),8000);}else{setDropAlert(null);if(dropAlertTimer.current)clearTimeout(dropAlertTimer.current);}
+        return np;});
+    },[dragId,dragFrom,selIdx,constraints,allStudents]);
+
+    const handleExport=()=>exportToExcel(`クラス編成案${selIdx+1}`,currentPlan.classes);
+    const handleSaveSession=useCallback(()=>{const data=onSaveSession?.(localPlans,selIdx);if(data){setSaveMsg('作業状態を保存しました。次回起動時に「再開する」から続行できます。');setTimeout(()=>setSaveMsg(null),5000);}else{setSaveMsg('保存に失敗しました');setTimeout(()=>setSaveMsg(null),3000);}},[onSaveSession,localPlans,selIdx]);
+    const handleExportSessionJson=useCallback(()=>{const data=onSaveSession?.(localPlans,selIdx);if(data)exportSessionToFile(data);},[onSaveSession,localPlans,selIdx]);
+    if(!currentPlan)return(<div className="max-w-7xl mx-auto px-6 py-8 text-center"><p className="text-gray-600 mb-4">編成案が見つかりませんでした。</p><button onClick={onBack} className="px-4 py-2 bg-blue-600 text-white rounded-lg">戻る</button></div>);
+
+    const displayVio=viewMode==='drag'?dragViolations:violated;
+    return(<div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex items-center justify-between mb-6"><div><h2 className="text-3xl font-bold text-gray-800 mb-1">結果確認</h2><p className="text-gray-600">AI最適化により{localPlans.length}案を生成しました。タブで比較し、ドラッグ&ドロップで微調整できます。</p></div><div className="flex gap-2 flex-wrap"><button onClick={onBack} className="px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg">← 戻る</button><button onClick={handleSaveSession} className="px-4 py-2 bg-amber-500 text-white font-medium rounded-lg hover:bg-amber-600">💾 中断して保存</button><button onClick={handleExportSessionJson} className="px-4 py-2 bg-gray-600 text-white font-medium rounded-lg hover:bg-gray-700">📁 JSONで保存</button><button onClick={handleExport} className="px-4 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700">📥 Excelで出力</button></div></div>
+        {saveMsg&&<div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm font-medium flex items-center gap-2"><span>✅</span><span>{saveMsg}</span></div>}
+        <div className="flex gap-3 mb-4 overflow-x-auto pb-2">{localPlans.map((plan,i)=><button key={i} onClick={()=>setSelIdx(i)} className={`flex-shrink-0 flex flex-col items-center px-4 py-2.5 rounded-xl border-2 transition-all text-sm font-medium ${selIdx===i?'border-blue-600 bg-blue-600 text-white shadow-md':'border-gray-200 bg-white text-gray-700 hover:border-blue-300'}`}><span>案 {i+1}</span><span className="text-xs mt-1">スコア: {plan.score.toFixed(0)}</span>{plan.violatedConstraints.length>0&&<span className="text-xs mt-1 px-2 py-0.5 bg-red-500 text-white rounded">⚠{plan.violatedConstraints.length}</span>}</button>)}</div>
+        {displayVio.length>0&&<div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4"><div className="font-bold text-red-700 mb-2">⚠ ペア制約の違反 {displayVio.length}件</div><div className="space-y-1 text-sm text-red-600">{displayVio.map((c,i)=>{const nA=allStudents.find(s=>s.id===c.studentA)?.name??c.studentA;const nB=allStudents.find(s=>s.id===c.studentB)?.name??c.studentB;return<div key={i}>{c.type==='ng'?'NG（同クラス禁止）':'OK（同クラス指定）'}: {nA} ↔ {nB}</div>;})}</div></div>}
+        {viewMode==='drag'&&pianoWarnings.size>0&&<div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-4"><div className="font-bold text-yellow-700 mb-1">🎹 ピアノ奏者がいないクラスがあります</div><div className="flex gap-2">{Array.from(pianoWarnings).sort((a,b)=>a-b).map(n=><span key={n} className="px-2 py-1 bg-red-100 text-red-700 rounded text-sm font-medium">{n}組：ピアノ 0名</span>)}</div></div>}
+        <div className="flex gap-3 mb-4"><button onClick={()=>setViewMode('stats')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${viewMode==='stats'?'bg-blue-600 text-white':'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>統計ビュー</button><button onClick={()=>setViewMode('drag')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${viewMode==='drag'?'bg-blue-600 text-white':'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>ドラッグ&ドロップ編集</button></div>
+        {viewMode==='stats'&&<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">{currentPlan.stats.map(s=><StatsCard key={s.classNumber} stats={s}/>)}</div>}
+        {viewMode==='drag'&&<div>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm text-blue-700">生徒カードをドラッグして別のクラス列にドロップすると移動できます。移動後にピアノ配置・NG/OK制約・クラス人数差・男女比の条件が満たされない場合、アラートが表示されます。</div>
+            {dropAlert&&dropAlert.length>0&&<div className="fixed top-4 right-4 z-50 max-w-sm w-full alert-slide-in"><div className="bg-gradient-to-br from-red-600 to-red-700 text-white rounded-xl shadow-2xl overflow-hidden"><div className="flex items-center justify-between px-4 py-3 bg-red-800"><div className="flex items-center gap-2"><span className="text-xl alert-shake">⚠️</span><span className="font-bold text-base">条件違反が検出されました</span></div><button onClick={()=>{setDropAlert(null);if(dropAlertTimer.current)clearTimeout(dropAlertTimer.current);}} className="text-red-200 hover:text-white text-xl leading-none px-1">✕</button></div><div className="p-3 space-y-2">{dropAlert.map((msg,i)=><div key={i} className={`flex items-start gap-2 text-sm rounded-lg px-3 py-2 ${msg.type==='piano'?'bg-yellow-600':msg.type==='ng'?'bg-red-800':msg.type==='size'?'bg-indigo-600':msg.type==='gender'?'bg-blue-700':'bg-orange-600'}`}><span className="flex-1">{msg.text}</span></div>)}</div><div className="px-4 py-2 bg-red-800 text-xs text-red-200 text-center">ドラッグ&ドロップで修正してください（8秒後に自動で閉じます）</div></div></div>}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">{currentPlan.classes.map(cls=><ClassColumn key={cls.classNumber} classData={cls} draggingStudentId={dragId} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDrop={handleDrop} hasPianoWarning={pianoWarnings.has(cls.classNumber)} violations={dragViolations} allStudents={allStudents}/>)}</div>
+            <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4"><h4 className="font-medium text-gray-800 mb-2">リアルタイム統計サマリー</h4><div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">{currentPlan.classes.map((cls,i)=>{const st=currentPlan.stats[i];const hw=pianoWarnings.has(cls.classNumber);return(<div key={cls.classNumber} className={`p-2 rounded-lg border text-sm ${hw?'border-red-300 bg-red-50':'border-gray-200 bg-gray-50'}`}><div className="font-bold" style={{color:CLASS_COLORS[(cls.classNumber-1)%CLASS_COLORS.length]}}>{cls.classNumber}組</div><div className="text-xs text-gray-600">{st?.total??0}名 | 学力{st?.avgAcademic??0} | 配慮{st?.totalCarePoints??0}pt</div>{hw&&<div className="text-xs text-red-600 font-medium">🎹 ピアノ 0名</div>}</div>);})}</div></div>
+        </div>}
+    </div>);
+}
+
+// Main App
+function App(){
+    const[currentStep,setCurrentStep]=useState(0);const[schoolType,setSchoolType]=useState(null);const[students,setStudents]=useState([]);
+    const[academicInputType,setAcademicInputType]=useState('scale_5');const[physicalInputType,setPhysicalInputType]=useState('scale_5');
+    const[showUpload,setShowUpload]=useState(false);const[plans,setPlans]=useState([]);const[constraints,setConstraints]=useState([]);
+    const[isOptimizing,setIsOptimizing]=useState(false);const[optimizationProgress,setOptimizationProgress]=useState(0);const[optimizationError,setOptimizationError]=useState(null);
+    const[isTransition,setIsTransition]=useState(false);const[sourceSchoolType,setSourceSchoolType]=useState(null);
+    const[savedSession,setSavedSession]=useState(null);
+
+    useEffect(()=>{const s=loadSessionFromStorage();if(s&&s.version)setSavedSession(s);},[]);
+
+    const handleSaveSession=useCallback((currentPlans,selectedPlanIdx)=>{
+        const data={version:1,savedAt:new Date().toISOString(),schoolType,students,academicInputType,physicalInputType,plans:currentPlans,constraints,isTransition,sourceSchoolType,selectedPlanIdx:selectedPlanIdx??0};
+        if(saveSessionToStorage(data)){setSavedSession(data);return data;}return null;
+    },[schoolType,students,academicInputType,physicalInputType,constraints,isTransition,sourceSchoolType]);
+
+    const handleResumeSession=useCallback((session)=>{
+        setSchoolType(session.schoolType);setStudents(session.students);setAcademicInputType(session.academicInputType);setPhysicalInputType(session.physicalInputType);
+        setPlans(session.plans);setConstraints(session.constraints??[]);setIsTransition(session.isTransition??false);setSourceSchoolType(session.sourceSchoolType??null);
+        setShowUpload(false);setCurrentStep(3);
+    },[]);
+
+    const handleImportSession=useCallback(async(file)=>{try{const data=await importSessionFromFile(file);if(data&&data.students&&data.plans){handleResumeSession(data);}else{alert('無効なセッションファイルです。');}}catch(e){console.error(e);alert('ファイルの読み込みに失敗しました。');}},[handleResumeSession]);
+
+    const handleClearSession=useCallback(()=>{clearSessionStorage();setSavedSession(null);},[]);
+
+    const handleResumeFromExcel=useCallback((importedStudents,at,pt)=>{
+        const normalized=normalizeStudents(importedStudents,at,pt);
+        const assignedNums=[...new Set(normalized.map(s=>s.assignedClass).filter(Boolean))].sort((a,b)=>a-b);
+        if(!assignedNums.length)return;
+        const classes=assignedNums.map(cn=>({classNumber:cn,students:normalized.filter(s=>s.assignedClass===cn)}));
+        const unassigned=normalized.filter(s=>!s.assignedClass);
+        if(unassigned.length&&classes.length)classes[0].students.push(...unassigned);
+        const stats=classes.map(c=>calcClassStats(c));
+        const plan={id:'plan_restored',score:0,classes,stats,violatedConstraints:[],generatedAt:new Date()};
+        setStudents(normalized);setAcademicInputType(at);setPhysicalInputType(pt);
+        setPlans([plan]);setConstraints([]);setShowUpload(false);setCurrentStep(3);
+    },[]);
+
+    const handleSchoolSelect=useCallback((type,useSample,options)=>{
+        const srcType=options?.sourceSchoolType??type;const srcPreset=SCHOOL_PRESETS[srcType];
+        setSchoolType(type);setIsTransition(options?.isTransition??false);setSourceSchoolType(options?.sourceSchoolType??null);
+        setAcademicInputType(srcPreset.defaultAcademicInput);setPhysicalInputType(srcPreset.defaultPhysicalInput);setShowUpload(!useSample);
+        if(useSample){const ss=generateSampleStudents(srcType);setStudents(normalizeStudents(ss,srcPreset.defaultAcademicInput,srcPreset.defaultPhysicalInput));}else{setStudents([]);}
+        setCurrentStep(1);
+    },[]);
+    const handleDataConfirm=useCallback((cs,at,pt)=>{setStudents(cs);setAcademicInputType(at);setPhysicalInputType(pt);setCurrentStep(2);},[]);
+    const handleOptimizationStart=useCallback(async(nc,w,c)=>{if(!schoolType)return;setConstraints(c);setIsOptimizing(true);setOptimizationError(null);setOptimizationProgress(0);try{const cfg={numClasses:nc,schoolType,weights:w,constraints:c,...DEFAULT_GA_CONFIG};const gp=await optimizeClassAssignment(students,cfg,p=>setOptimizationProgress(Math.round(p*100)));setPlans(gp);setCurrentStep(3);}catch(e){console.error(e);setOptimizationError('最適化中にエラーが発生しました。再度お試しください。');}finally{setIsOptimizing(false);}},[schoolType,students]);
+    const preset=schoolType?SCHOOL_PRESETS[schoolType]:null;
+    return(<div className="min-h-screen bg-gray-50">
+        <Header currentStep={currentStep}/>
+        {isOptimizing&&<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl"><div className="text-center"><div className="text-6xl mb-4">🤖</div><h3 className="text-2xl font-bold text-gray-800 mb-2">AI最適化中...</h3><p className="text-gray-600 mb-6">遺伝的アルゴリズムによりクラス編成を最適化しています</p><div className="w-full bg-gray-200 rounded-full h-4 mb-2 overflow-hidden"><div className="bg-blue-600 h-full transition-all duration-300 rounded-full" style={{width:`${optimizationProgress}%`}}></div></div><div className="text-3xl font-bold text-blue-600">{optimizationProgress}%</div></div></div></div>}
+        {optimizationError&&<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl"><div className="text-center"><div className="text-6xl mb-4">⚠️</div><h3 className="text-2xl font-bold text-red-600 mb-2">エラー</h3><p className="text-gray-700 mb-6">{optimizationError}</p><button onClick={()=>setOptimizationError(null)} className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700">再設定する</button></div></div></div>}
+        {currentStep===0&&<SchoolSelect onSelect={handleSchoolSelect} savedSession={savedSession} onResumeSession={handleResumeSession} onImportSession={handleImportSession} onClearSession={handleClearSession}/>}
+        {currentStep===1&&schoolType&&<DataReview students={students} schoolType={schoolType} academicInputType={academicInputType} physicalInputType={physicalInputType} onNext={handleDataConfirm} onBack={()=>setCurrentStep(0)} showUpload={showUpload} onResumeFromExcel={handleResumeFromExcel}/>}
+        {currentStep===2&&schoolType&&preset&&<Conditions students={students} schoolType={schoolType} defaultWeights={preset.defaultWeights} defaultNumClasses={preset.defaultNumClasses} isTransition={isTransition} sourceSchoolType={sourceSchoolType} onStart={handleOptimizationStart} onBack={()=>setCurrentStep(1)}/>}
+        {currentStep===3&&plans.length>0&&<Results plans={plans} constraints={constraints} allStudents={students} onBack={()=>setCurrentStep(2)} onSaveSession={handleSaveSession}/>}
+        <footer className="bg-gray-800 text-gray-300 py-4 mt-12"><div className="max-w-7xl mx-auto px-6 text-center text-sm">AIクラス編成アシスタント v1.0 | 完全オフライン動作 | 文科省情報セキュリティガイドライン準拠</div></footer>
+    </div>);
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App/>);
+</script>
+</body>
+</html>
